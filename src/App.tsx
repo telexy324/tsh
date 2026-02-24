@@ -3,6 +3,27 @@ import { invoke } from "@tauri-apps/api/core";
 import { FitAddon } from "xterm-addon-fit";
 import { Terminal } from "xterm";
 import { ConnectRequest, SessionInfo, SftpEntry } from "./types";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow
+} from "@/components/ui/table";
 
 interface CommandResult {
   stdout: string;
@@ -314,270 +335,495 @@ export default function App() {
   const auth = connectForm.auth;
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <h1>SSH Sessions</h1>
-        <form onSubmit={handleConnect} className="panel">
-          <input
-            placeholder="连接名称（可选）"
-            value={connectForm.label ?? ""}
-            onChange={(event) =>
-              setConnectForm((prev) => ({ ...prev, label: event.target.value }))
-            }
-          />
-          <input
-            placeholder="Host"
-            value={connectForm.host}
-            onChange={(event) =>
-              setConnectForm((prev) => ({ ...prev, host: event.target.value }))
-            }
-            required
-          />
-          <input
-            type="number"
-            placeholder="Port"
-            min={1}
-            max={65535}
-            value={connectForm.port}
-            onChange={(event) =>
-              setConnectForm((prev) => ({ ...prev, port: Number(event.target.value) }))
-            }
-            required
-          />
-          <input
-            placeholder="Username"
-            value={connectForm.username}
-            onChange={(event) =>
-              setConnectForm((prev) => ({ ...prev, username: event.target.value }))
-            }
-            required
-          />
+    <div className="min-h-screen text-foreground">
+      <div className="min-h-screen p-6">
+        <header className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-border/60 bg-card/70 px-4 py-3 shadow-[0_12px_30px_rgba(0,0,0,0.3)] backdrop-blur">
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-amber-400 to-orange-600 shadow-[0_0_18px_rgba(245,158,11,0.6)]" />
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-lg font-semibold tracking-tight">
+                  MobaXterm Control
+                </span>
+                <Badge variant="secondary" className="border border-border/60">
+                  SSH Center
+                </Badge>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                多会话管理 · 终端 · SFTP
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" size="sm">
+              新建会话
+            </Button>
+            <Button variant="secondary" size="sm">
+              导入书签
+            </Button>
+            <Button variant="secondary" size="sm">
+              终端设置
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={loading}
+              onClick={refreshSessions}
+            >
+              刷新
+            </Button>
+          </div>
+        </header>
 
-          <div className="auth-switcher">
-            <button
-              type="button"
-              className={auth.kind === "password" ? "active" : ""}
-              onClick={() =>
-                setConnectForm((prev) => ({
-                  ...prev,
-                  auth: { kind: "password", password: "" }
-                }))
-              }
-            >
-              Password
-            </button>
-            <button
-              type="button"
-              className={auth.kind === "privateKey" ? "active" : ""}
-              onClick={() =>
-                setConnectForm((prev) => ({
-                  ...prev,
-                  auth: {
-                    kind: "privateKey",
-                    privateKeyPath: "",
-                    passphrase: ""
-                  }
-                }))
-              }
-            >
-              Private Key
-            </button>
+        <div className="grid min-h-[calc(100vh-160px)] gap-6 md:grid-cols-[320px_1fr]">
+          <aside className="space-y-4">
+            <Card className="border-border/70 bg-card/80 shadow-[0_12px_30px_rgba(0,0,0,0.25)]">
+            <CardHeader>
+              <CardTitle>新建连接</CardTitle>
+              <CardDescription>快速建立一个新的 SSH 会话。</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={handleConnect} className="space-y-3">
+                  <div className="space-y-1">
+                    <Label htmlFor="label">连接名称（可选）</Label>
+                    <Input
+                      id="label"
+                      placeholder="例如：生产环境"
+                      value={connectForm.label ?? ""}
+                      onChange={(event) =>
+                        setConnectForm((prev) => ({
+                          ...prev,
+                          label: event.target.value
+                        }))
+                      }
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="host">Host</Label>
+                    <Input
+                      id="host"
+                      placeholder="192.168.1.10"
+                      value={connectForm.host}
+                      onChange={(event) =>
+                        setConnectForm((prev) => ({ ...prev, host: event.target.value }))
+                      }
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="port">Port</Label>
+                    <Input
+                      id="port"
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={connectForm.port}
+                      onChange={(event) =>
+                        setConnectForm((prev) => ({
+                          ...prev,
+                          port: Number(event.target.value)
+                        }))
+                      }
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="username">Username</Label>
+                    <Input
+                      id="username"
+                      placeholder="root"
+                      value={connectForm.username}
+                      onChange={(event) =>
+                        setConnectForm((prev) => ({
+                          ...prev,
+                          username: event.target.value
+                        }))
+                      }
+                      required
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      type="button"
+                      variant={auth.kind === "password" ? "default" : "secondary"}
+                      className="shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset]"
+                      onClick={() =>
+                        setConnectForm((prev) => ({
+                          ...prev,
+                          auth: { kind: "password", password: "" }
+                        }))
+                      }
+                    >
+                      Password
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={auth.kind === "privateKey" ? "default" : "secondary"}
+                      className="shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset]"
+                      onClick={() =>
+                        setConnectForm((prev) => ({
+                          ...prev,
+                          auth: {
+                            kind: "privateKey",
+                            privateKeyPath: "",
+                            passphrase: ""
+                          }
+                        }))
+                      }
+                    >
+                      Private Key
+                    </Button>
+                  </div>
+
+                  {auth.kind === "password" ? (
+                    <div className="space-y-1">
+                      <Label htmlFor="password">Password</Label>
+                      <Input
+                        id="password"
+                        type="password"
+                        placeholder="请输入密码"
+                        value={auth.password}
+                        onChange={(event) =>
+                          setConnectForm((prev) => ({
+                            ...prev,
+                            auth: {
+                              kind: "password",
+                              password: event.target.value
+                            }
+                          }))
+                        }
+                        required
+                      />
+                    </div>
+                  ) : (
+                    <>
+                      <div className="space-y-1">
+                        <Label htmlFor="key-path">私钥路径（本机）</Label>
+                        <Input
+                          id="key-path"
+                          placeholder="/Users/name/.ssh/id_rsa"
+                          value={auth.privateKeyPath}
+                          onChange={(event) =>
+                            setConnectForm((prev) => ({
+                              ...prev,
+                              auth: {
+                                kind: "privateKey",
+                                privateKeyPath: event.target.value,
+                                passphrase: auth.passphrase
+                              }
+                            }))
+                          }
+                          required
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="passphrase">私钥口令（可选）</Label>
+                        <Input
+                          id="passphrase"
+                          type="password"
+                          placeholder="可留空"
+                          value={auth.passphrase ?? ""}
+                          onChange={(event) =>
+                            setConnectForm((prev) => ({
+                              ...prev,
+                              auth: {
+                                kind: "privateKey",
+                                privateKeyPath: auth.privateKeyPath,
+                                passphrase: event.target.value
+                              }
+                            }))
+                          }
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  <Button type="submit" disabled={loading} className="w-full">
+                    {loading ? "处理中..." : "新建连接"}
+                  </Button>
+              </form>
+            </CardContent>
+          </Card>
+
+            <Card className="border-border/70 bg-card/80">
+              <CardHeader>
+                <CardTitle>会话树</CardTitle>
+                <CardDescription>按分组浏览和快速切换。</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3 text-sm">
+                <div className="rounded-lg border border-border/70 bg-muted/50 p-2">
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span>已连接</span>
+                    <span>{sessions.length}</span>
+                  </div>
+                  <div className="mt-2 space-y-2">
+                    {sessions.length === 0 ? (
+                      <div className="text-xs text-muted-foreground">
+                        暂无会话
+                      </div>
+                    ) : (
+                      sessions.map((session) => {
+                        const label =
+                          session.label?.trim() ||
+                          `${session.username}@${session.host}`;
+                        const isActive = session.id === activeSessionId;
+                        return (
+                          <button
+                            key={session.id}
+                            type="button"
+                            onClick={() => setActiveSessionId(session.id)}
+                            className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 transition ${
+                              isActive
+                                ? "bg-primary/20 text-foreground"
+                                : "hover:bg-muted"
+                            }`}
+                          >
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`h-2.5 w-2.5 rounded-full ${
+                                  isActive
+                                    ? "bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.8)]"
+                                    : "bg-amber-400 shadow-[0_0_10px_rgba(245,158,11,0.7)]"
+                                }`}
+                              />
+                              <span className="truncate text-left text-xs">
+                                {label}
+                              </span>
+                            </div>
+                            <span className="text-[10px] text-muted-foreground">
+                              SSH
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+        </aside>
+
+        <main className="space-y-4">
+          <div className="flex flex-wrap gap-2">
+            {sessions.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border/70 bg-card/60 px-4 py-2 text-sm text-muted-foreground">
+                还没有连接记录。
+              </div>
+            ) : (
+              sessions.map((session) => {
+                const label =
+                  session.label?.trim() || `${session.username}@${session.host}`;
+                const isActive = session.id === activeSessionId;
+                return (
+                  <div
+                    key={session.id}
+                    className={`relative flex items-center gap-2 overflow-hidden rounded-md border px-4 py-2 text-sm shadow-[inset_0_0_12px_rgba(0,0,0,0.25)] ${
+                      isActive
+                        ? "border-primary/60 bg-primary/15"
+                        : "border-border/70 bg-card/80"
+                    }`}
+                    onClick={() => setActiveSessionId(session.id)}
+                  >
+                    <div className="absolute left-0 top-0 h-full w-8 -skew-x-12 bg-muted/40" />
+                    <div className="relative flex items-center gap-2">
+                      <span
+                        className={`h-2.5 w-2.5 rounded-full ${
+                          isActive
+                            ? "bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.8)]"
+                            : "bg-amber-400 shadow-[0_0_10px_rgba(245,158,11,0.7)]"
+                        }`}
+                      />
+                      <span className="font-medium">{label}</span>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="ml-2 h-7 w-7 text-muted-foreground hover:text-foreground"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void closeSession(session.id);
+                      }}
+                    >
+                      ×
+                    </Button>
+                  </div>
+                );
+              })
+            )}
           </div>
 
-          {auth.kind === "password" ? (
-            <input
-              type="password"
-              placeholder="Password"
-              value={auth.password}
-              onChange={(event) =>
-                setConnectForm((prev) => ({
-                  ...prev,
-                  auth: {
-                    kind: "password",
-                    password: event.target.value
-                  }
-                }))
-              }
-              required
-            />
-          ) : (
-            <>
-              <input
-                placeholder="私钥路径（本机）"
-                value={auth.privateKeyPath}
-                onChange={(event) =>
-                  setConnectForm((prev) => ({
-                    ...prev,
-                    auth: {
-                      kind: "privateKey",
-                      privateKeyPath: event.target.value,
-                      passphrase: auth.passphrase
-                    }
-                  }))
-                }
-                required
+          <Card className="border-border/70 bg-card/80 shadow-[0_18px_35px_rgba(0,0,0,0.3)]">
+            <CardHeader>
+              <CardTitle>交互式终端</CardTitle>
+              <CardDescription>直接在当前会话中操作 Shell。</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div
+                ref={terminalContainerRef}
+                className="h-[320px] rounded-lg border border-border/70 bg-[#0b111a] shadow-[inset_0_0_20px_rgba(0,0,0,0.6)]"
               />
-              <input
-                type="password"
-                placeholder="私钥口令（可选）"
-                value={auth.passphrase ?? ""}
-                onChange={(event) =>
-                  setConnectForm((prev) => ({
-                    ...prev,
-                    auth: {
-                      kind: "privateKey",
-                      privateKeyPath: auth.privateKeyPath,
-                      passphrase: event.target.value
-                    }
-                  }))
-                }
-              />
-            </>
-          )}
+            </CardContent>
+          </Card>
 
-          <button type="submit" disabled={loading}>
-            {loading ? "处理中..." : "新建连接"}
-          </button>
-        </form>
+            {activeSession ? (
+              <>
+                <div className="grid gap-4 lg:grid-cols-[1.2fr_1fr]">
+                  <Card className="border-border/70 bg-card/80">
+                    <CardHeader>
+                      <CardTitle>会话信息</CardTitle>
+                      <CardDescription>当前连接的实时状态。</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-2 text-sm">
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">地址</span>
+                        <span>
+                          {activeSession.username}@{activeSession.host}:
+                          {activeSession.port}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Connected</span>
+                        <span>
+                          {new Date(activeSession.connectedAt).toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">Last Active</span>
+                        <span>
+                          {new Date(activeSession.lastActiveAt).toLocaleString()}
+                        </span>
+                      </div>
+                      <Separator className="my-3 bg-border/70" />
+                      <Button onClick={keepAlive} disabled={loading} className="w-full">
+                        发送 Keepalive
+                      </Button>
+                    </CardContent>
+                  </Card>
 
-        <button className="refresh" disabled={loading} onClick={refreshSessions}>
-          刷新会话
-        </button>
-      </aside>
+                  <Card className="border-border/70 bg-card/80">
+                    <CardHeader>
+                      <CardTitle>命令执行（非交互）</CardTitle>
+                      <CardDescription>快速执行一次性命令。</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        <Input
+                          value={commandInput}
+                          onChange={(event) => setCommandInput(event.target.value)}
+                          placeholder="输入远端命令"
+                        />
+                        <Button onClick={runCommand} disabled={loading}>
+                          运行
+                        </Button>
+                      </div>
+                      <pre className="min-h-[160px] whitespace-pre-wrap rounded-lg border border-border/70 bg-[#0b111a] p-3 text-xs text-slate-200">
+                        {commandOutput
+                          ? `exit=${commandOutput.exitCode}\n\nSTDOUT:\n${commandOutput.stdout}\n\nSTDERR:\n${commandOutput.stderr}`
+                          : "暂无输出"}
+                      </pre>
+                    </CardContent>
+                  </Card>
+                </div>
 
-      <main className="main">
-        <div className="tabs">
-          {sessions.map((session) => (
-            <div
-              key={session.id}
-              className={`tab ${session.id === activeSessionId ? "active" : ""}`}
-              onClick={() => setActiveSessionId(session.id)}
-            >
-              <span>{session.label}</span>
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  void closeSession(session.id);
-                }}
-              >
-                ×
-              </button>
-            </div>
-          ))}
+                <Card className="border-border/70 bg-card/80">
+                  <CardHeader>
+                    <CardTitle>SFTP</CardTitle>
+                    <CardDescription>浏览与传输远端文件。</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <Input
+                        value={remoteDir}
+                        onChange={(event) => setRemoteDir(event.target.value)}
+                        placeholder="远端目录"
+                      />
+                      <Button onClick={listDir} disabled={loading}>
+                        列目录
+                      </Button>
+                    </div>
+
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>名称</TableHead>
+                          <TableHead>类型</TableHead>
+                          <TableHead>大小</TableHead>
+                          <TableHead>路径</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {sftpEntries.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={4} className="text-center">
+                              暂无文件记录
+                            </TableCell>
+                          </TableRow>
+                        ) : (
+                          sftpEntries.map((entry) => (
+                            <TableRow key={`${entry.path}-${entry.name}`}>
+                              <TableCell>{entry.name}</TableCell>
+                              <TableCell>{entry.kind}</TableCell>
+                              <TableCell>{entry.size ?? "-"}</TableCell>
+                              <TableCell>{entry.path}</TableCell>
+                            </TableRow>
+                          ))
+                        )}
+                      </TableBody>
+                    </Table>
+
+                    <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
+                      <Input
+                        placeholder="本地文件路径"
+                        value={uploadLocal}
+                        onChange={(event) => setUploadLocal(event.target.value)}
+                      />
+                      <Input
+                        placeholder="远端目标路径"
+                        value={uploadRemote}
+                        onChange={(event) => setUploadRemote(event.target.value)}
+                      />
+                      <Button onClick={uploadFile} disabled={loading}>
+                        上传
+                      </Button>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
+                      <Input
+                        placeholder="远端文件路径"
+                        value={downloadRemote}
+                        onChange={(event) => setDownloadRemote(event.target.value)}
+                      />
+                      <Input
+                        placeholder="本地目标路径"
+                        value={downloadLocal}
+                        onChange={(event) => setDownloadLocal(event.target.value)}
+                      />
+                      <Button onClick={downloadFile} disabled={loading}>
+                        下载
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              </>
+            ) : (
+              <Card className="border-border/70 bg-card/80">
+                <CardContent className="py-10 text-center text-muted-foreground">
+                  先创建一个 SSH 连接。
+                </CardContent>
+              </Card>
+            )}
+
+            {error ? (
+              <Alert variant="destructive">
+                <AlertTitle>发生错误</AlertTitle>
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            ) : null}
+          </main>
         </div>
-
-        <section className="panel">
-          <h2>交互式终端</h2>
-          <div ref={terminalContainerRef} className="terminal-container" />
-        </section>
-
-        {activeSession ? (
-          <>
-            <section className="panel">
-              <h2>会话信息</h2>
-              <p>
-                {activeSession.username}@{activeSession.host}:{activeSession.port}
-              </p>
-              <p>Connected: {new Date(activeSession.connectedAt).toLocaleString()}</p>
-              <p>Last Active: {new Date(activeSession.lastActiveAt).toLocaleString()}</p>
-              <button onClick={keepAlive} disabled={loading}>
-                发送 Keepalive
-              </button>
-            </section>
-
-            <section className="panel">
-              <h2>命令执行（非交互）</h2>
-              <div className="row">
-                <input
-                  value={commandInput}
-                  onChange={(event) => setCommandInput(event.target.value)}
-                  placeholder="输入远端命令"
-                />
-                <button onClick={runCommand} disabled={loading}>
-                  运行
-                </button>
-              </div>
-              <pre>
-                {commandOutput
-                  ? `exit=${commandOutput.exitCode}\n\nSTDOUT:\n${commandOutput.stdout}\n\nSTDERR:\n${commandOutput.stderr}`
-                  : "暂无输出"}
-              </pre>
-            </section>
-
-            <section className="panel">
-              <h2>SFTP</h2>
-              <div className="row">
-                <input
-                  value={remoteDir}
-                  onChange={(event) => setRemoteDir(event.target.value)}
-                  placeholder="远端目录"
-                />
-                <button onClick={listDir} disabled={loading}>
-                  列目录
-                </button>
-              </div>
-
-              <table>
-                <thead>
-                  <tr>
-                    <th>名称</th>
-                    <th>类型</th>
-                    <th>大小</th>
-                    <th>路径</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sftpEntries.map((entry) => (
-                    <tr key={`${entry.path}-${entry.name}`}>
-                      <td>{entry.name}</td>
-                      <td>{entry.kind}</td>
-                      <td>{entry.size ?? "-"}</td>
-                      <td>{entry.path}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-
-              <div className="row row-three">
-                <input
-                  placeholder="本地文件路径"
-                  value={uploadLocal}
-                  onChange={(event) => setUploadLocal(event.target.value)}
-                />
-                <input
-                  placeholder="远端目标路径"
-                  value={uploadRemote}
-                  onChange={(event) => setUploadRemote(event.target.value)}
-                />
-                <button onClick={uploadFile} disabled={loading}>
-                  上传
-                </button>
-              </div>
-
-              <div className="row row-three">
-                <input
-                  placeholder="远端文件路径"
-                  value={downloadRemote}
-                  onChange={(event) => setDownloadRemote(event.target.value)}
-                />
-                <input
-                  placeholder="本地目标路径"
-                  value={downloadLocal}
-                  onChange={(event) => setDownloadLocal(event.target.value)}
-                />
-                <button onClick={downloadFile} disabled={loading}>
-                  下载
-                </button>
-              </div>
-            </section>
-          </>
-        ) : (
-          <section className="panel empty">先创建一个 SSH 连接。</section>
-        )}
-
-        {error ? <div className="error">{error}</div> : null}
-      </main>
+      </div>
     </div>
   );
 }

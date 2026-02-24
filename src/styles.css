@@ -1,211 +1,42 @@
-:root {
-  font-family: "IBM Plex Sans", "PingFang SC", sans-serif;
-  color: #ebf1f8;
-  background: radial-gradient(circle at top left, #1a2e43, #0f1724 55%);
-}
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-* {
-  box-sizing: border-box;
-}
-
-body {
-  margin: 0;
-  min-height: 100vh;
-}
-
-#root {
-  min-height: 100vh;
-}
-
-.app-shell {
-  display: grid;
-  grid-template-columns: 320px 1fr;
-  min-height: 100vh;
-}
-
-.sidebar {
-  padding: 20px;
-  border-right: 1px solid #28405b;
-  background: linear-gradient(170deg, #122335, #0c1825);
-}
-
-.sidebar h1 {
-  margin: 0 0 16px;
-  font-size: 1.2rem;
-}
-
-.panel {
-  background: rgba(15, 34, 53, 0.85);
-  border: 1px solid #2a4460;
-  border-radius: 10px;
-  padding: 14px;
-  margin-bottom: 14px;
-}
-
-.panel h2 {
-  margin: 0 0 10px;
-  font-size: 1rem;
-}
-
-input,
-button {
-  width: 100%;
-  border-radius: 8px;
-  border: 1px solid #33516f;
-  background: #11263a;
-  color: #ebf1f8;
-  padding: 8px 10px;
-  margin-bottom: 8px;
-}
-
-button {
-  cursor: pointer;
-  background: #1d5588;
-}
-
-button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.refresh {
-  margin-top: 6px;
-}
-
-.main {
-  padding: 18px;
-}
-
-.tabs {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 14px;
-  flex-wrap: wrap;
-}
-
-.tab {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  max-width: 220px;
-  padding: 8px 10px;
-  border: 1px solid #2f4b69;
-  border-radius: 999px;
-  background: #13293f;
-  cursor: pointer;
-}
-
-.tab span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tab.active {
-  background: #1e4a72;
-}
-
-.tab button {
-  width: auto;
-  margin: 0;
-  border: none;
-  background: transparent;
-  font-size: 1rem;
-  padding: 0;
-}
-
-.auth-switcher {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
-.auth-switcher button.active {
-  background: #309272;
-}
-
-.row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.row input {
-  flex: 1;
-  margin-bottom: 0;
-}
-
-.row button {
-  width: auto;
-  margin-bottom: 0;
-}
-
-.row-three input {
-  flex: 1;
-}
-
-.row-three button {
-  min-width: 90px;
-}
-
-.terminal-container {
-  width: 100%;
-  height: 320px;
-  border-radius: 8px;
-  border: 1px solid #26384d;
-  overflow: hidden;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 10px 0;
-}
-
-th,
-td {
-  border-bottom: 1px solid #2a4460;
-  padding: 6px;
-  text-align: left;
-  font-size: 0.9rem;
-}
-
-pre {
-  margin: 0;
-  border-radius: 8px;
-  background: #0b1320;
-  border: 1px solid #26384d;
-  padding: 10px;
-  min-height: 160px;
-  white-space: pre-wrap;
-}
-
-.error {
-  margin-top: 10px;
-  color: #ffb8b8;
-}
-
-.empty {
-  text-align: center;
-  padding: 20px;
-}
-
-@media (max-width: 980px) {
-  .app-shell {
-    grid-template-columns: 1fr;
+@layer base {
+  :root {
+    --background: 222 47% 8%;
+    --foreground: 210 40% 98%;
+    --card: 222 47% 12%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 47% 12%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 23 90% 55%;
+    --primary-foreground: 222 47% 10%;
+    --secondary: 217 33% 18%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217 33% 16%;
+    --muted-foreground: 215 20% 70%;
+    --accent: 215 35% 20%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217 32% 22%;
+    --input: 217 32% 22%;
+    --ring: 23 90% 55%;
+    --radius: 12px;
   }
 
-  .sidebar {
-    border-right: none;
-    border-bottom: 1px solid #28405b;
+  * {
+    @apply border-border;
   }
 
-  .row {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .row button {
-    width: 100%;
+  body {
+    @apply bg-background text-foreground;
+    font-family: "IBM Plex Sans", "PingFang SC", sans-serif;
+    background-image:
+      radial-gradient(circle at top left, rgba(255, 255, 255, 0.08), transparent 45%),
+      radial-gradient(circle at 20% 20%, rgba(255, 138, 76, 0.15), transparent 45%),
+      linear-gradient(160deg, rgba(14, 24, 39, 0.95), rgba(9, 14, 23, 0.98));
+    background-attachment: fixed;
   }
 }
