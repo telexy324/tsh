@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { FitAddon } from "xterm-addon-fit";
 import { Terminal } from "xterm";
 import { ConnectRequest, SessionInfo, SftpEntry } from "./types";
@@ -16,20 +17,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow
-} from "@/components/ui/table";
-
-interface CommandResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
+import { cn } from "@/lib/utils";
+import { Upload } from "lucide-react";
 
 interface TerminalStartResult {
   terminalId: string;
@@ -48,14 +37,21 @@ export default function App() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [terminalId, setTerminalId] = useState<string | null>(null);
-  const [commandInput, setCommandInput] = useState("uname -a");
-  const [commandOutput, setCommandOutput] = useState<CommandResult | null>(null);
-  const [remoteDir, setRemoteDir] = useState(".");
-  const [sftpEntries, setSftpEntries] = useState<SftpEntry[]>([]);
+  const [sftpRoot, setSftpRoot] = useState(".");
+  const [currentDir, setCurrentDir] = useState(".");
+  const [sftpTree, setSftpTree] = useState<SftpEntry[]>([]);
+  const [sftpChildren, setSftpChildren] = useState<Record<string, SftpEntry[]>>({});
+  const [sftpExpanded, setSftpExpanded] = useState<Record<string, boolean>>({});
+  const [sftpLoading, setSftpLoading] = useState<Record<string, boolean>>({});
   const [uploadLocal, setUploadLocal] = useState("");
   const [uploadRemote, setUploadRemote] = useState("");
   const [downloadRemote, setDownloadRemote] = useState("");
   const [downloadLocal, setDownloadLocal] = useState("");
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    entry: SftpEntry;
+  } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -63,6 +59,7 @@ export default function App() {
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const terminalIdRef = useRef<string | null>(null);
+  const terminalGenerationRef = useRef(0);
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) ?? null,
@@ -97,6 +94,7 @@ export default function App() {
     const term = xtermRef.current;
     const fitAddon = fitAddonRef.current;
     if (!term || !fitAddon) return;
+    const generation = ++terminalGenerationRef.current;
 
     await closeTerminalInstance();
     term.clear();
@@ -107,6 +105,15 @@ export default function App() {
       cols: term.cols,
       rows: term.rows
     });
+
+    if (terminalGenerationRef.current !== generation) {
+      try {
+        await invoke("close_terminal", { terminalId: result.terminalId });
+      } catch {
+        // ignore stale terminal cleanup errors
+      }
+      return;
+    }
 
     terminalIdRef.current = result.terminalId;
     setTerminalId(result.terminalId);
@@ -156,6 +163,16 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const closeContext = () => setContextMenu(null);
+    window.addEventListener("click", closeContext);
+    window.addEventListener("contextmenu", closeContext);
+    return () => {
+      window.removeEventListener("click", closeContext);
+      window.removeEventListener("contextmenu", closeContext);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!activeSessionId) {
       void closeTerminalInstance();
       const term = xtermRef.current;
@@ -169,6 +186,15 @@ export default function App() {
     void startTerminalForActiveSession(activeSessionId).catch((err) => {
       setError(String(err));
     });
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    setSftpTree([]);
+    setSftpChildren({});
+    setSftpExpanded({});
+    if (activeSessionId) {
+      void loadRoot();
+    }
   }, [activeSessionId]);
 
   useEffect(() => {
@@ -247,40 +273,43 @@ export default function App() {
     }
   };
 
-  const runCommand = async () => {
-    if (!activeSessionId) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const output = await invoke<CommandResult>("run_command", {
-        sessionId: activeSessionId,
-        command: commandInput
-      });
-      setCommandOutput(output);
-      await refreshSessions();
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setLoading(false);
-    }
-  };
+  const sortEntries = (entries: SftpEntry[]) =>
+    [...entries].sort((a, b) => {
+      if (a.kind === "dir" && b.kind !== "dir") return -1;
+      if (a.kind !== "dir" && b.kind === "dir") return 1;
+      return a.name.localeCompare(b.name);
+    });
 
-  const listDir = async () => {
-    if (!activeSessionId) return;
-    setLoading(true);
+  const loadDir = async (path: string) => {
+    if (!activeSessionId) return [];
+    setSftpLoading((prev) => ({ ...prev, [path]: true }));
     setError(null);
     try {
       const entries = await invoke<SftpEntry[]>("sftp_list_dir", {
         sessionId: activeSessionId,
-        path: remoteDir
+        path
       });
-      setSftpEntries(entries);
-      await refreshSessions();
+      const sorted = sortEntries(entries);
+      setSftpChildren((prev) => ({ ...prev, [path]: sorted }));
+      return sorted;
     } catch (err) {
       setError(String(err));
+      return [];
     } finally {
-      setLoading(false);
+      setSftpLoading((prev) => ({ ...prev, [path]: false }));
     }
+  };
+
+  const loadRoot = async () => {
+    if (!activeSessionId) return;
+    setLoading(true);
+    const rootPath = sftpRoot.trim() || ".";
+    setSftpExpanded({});
+    setSftpChildren({});
+    const entries = await loadDir(rootPath);
+    setSftpTree(entries);
+    setCurrentDir(rootPath);
+    setLoading(false);
   };
 
   const uploadFile = async () => {
@@ -293,22 +322,24 @@ export default function App() {
         localPath: uploadLocal,
         remotePath: uploadRemote
       });
-      await listDir();
+      if (sftpRoot.trim()) {
+        await loadRoot();
+      }
     } catch (err) {
       setError(String(err));
       setLoading(false);
     }
   };
 
-  const downloadFile = async () => {
+  const downloadFile = async (remotePath: string, localPath: string) => {
     if (!activeSessionId) return;
     setLoading(true);
     setError(null);
     try {
       await invoke("sftp_download", {
         sessionId: activeSessionId,
-        remotePath: downloadRemote,
-        localPath: downloadLocal
+        remotePath,
+        localPath
       });
       await refreshSessions();
     } catch (err) {
@@ -333,6 +364,92 @@ export default function App() {
   };
 
   const auth = connectForm.auth;
+  const activeRoot = sftpRoot.trim() || ".";
+
+  const toggleDir = async (entry: SftpEntry) => {
+    if (entry.kind !== "dir") return;
+    const isExpanded = sftpExpanded[entry.path];
+    setSftpExpanded((prev) => ({ ...prev, [entry.path]: !isExpanded }));
+    setCurrentDir(entry.path);
+    if (!isExpanded && !sftpChildren[entry.path]) {
+      await loadDir(entry.path);
+    }
+  };
+
+  const openContextMenu = (event: React.MouseEvent, entry: SftpEntry) => {
+    event.preventDefault();
+    setContextMenu({ x: event.clientX, y: event.clientY, entry });
+  };
+
+  const handleDownload = async (entry: SftpEntry) => {
+    const suggested = downloadLocal || "";
+    const localPath = window.prompt("保存到本地路径", suggested);
+    if (!localPath) return;
+    setDownloadLocal(localPath);
+    setDownloadRemote(entry.path);
+    await downloadFile(entry.path, localPath);
+  };
+
+  const renderEntries = (entries: SftpEntry[], depth = 0) => {
+    if (!entries.length) {
+      return (
+        <div className="rounded-md border border-dashed border-border/60 px-3 py-2 text-xs text-muted-foreground">
+          此目录为空
+        </div>
+      );
+    }
+
+    return entries.map((entry) => {
+      const isDir = entry.kind === "dir";
+      const isExpanded = !!sftpExpanded[entry.path];
+      const children = sftpChildren[entry.path];
+      const isLoading = !!sftpLoading[entry.path];
+
+      return (
+        <div key={entry.path} className="space-y-1">
+          <div
+            className={cn(
+              "flex items-center gap-2 rounded-md px-2 py-1 text-xs transition",
+              isDir ? "hover:bg-muted/60" : "hover:bg-muted/40"
+            )}
+            style={{ paddingLeft: `${depth * 14 + 8}px` }}
+            onClick={() => (isDir ? toggleDir(entry) : undefined)}
+            onContextMenu={(event) =>
+              entry.kind === "file" ? openContextMenu(event, entry) : undefined
+            }
+          >
+            <span className="w-4 text-center text-muted-foreground">
+              {isDir ? (isExpanded ? "▾" : "▸") : "•"}
+            </span>
+            <span
+              className={cn(
+                "truncate",
+                isDir ? "font-medium text-foreground" : "text-muted-foreground"
+              )}
+            >
+              {entry.name}
+            </span>
+            <span className="ml-auto text-[10px] text-muted-foreground">
+              {entry.kind.toUpperCase()}
+            </span>
+          </div>
+          {isDir ? (
+            <div className="space-y-1">
+              {isLoading ? (
+                <div
+                  className="text-[10px] text-muted-foreground"
+                  style={{ paddingLeft: `${depth * 14 + 24}px` }}
+                >
+                  加载中...
+                </div>
+              ) : null}
+              {isExpanded && children ? renderEntries(children, depth + 1) : null}
+            </div>
+          ) : null}
+        </div>
+      );
+    });
+  };
 
   return (
     <div className="min-h-screen text-foreground">
@@ -701,108 +818,47 @@ export default function App() {
                       </Button>
                     </CardContent>
                   </Card>
-
-                  <Card className="border-border/70 bg-card/80">
-                    <CardHeader>
-                      <CardTitle>命令执行（非交互）</CardTitle>
-                      <CardDescription>快速执行一次性命令。</CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-3">
-                      <div className="flex flex-col gap-2 sm:flex-row">
-                        <Input
-                          value={commandInput}
-                          onChange={(event) => setCommandInput(event.target.value)}
-                          placeholder="输入远端命令"
-                        />
-                        <Button onClick={runCommand} disabled={loading}>
-                          运行
-                        </Button>
-                      </div>
-                      <pre className="min-h-[160px] whitespace-pre-wrap rounded-lg border border-border/70 bg-[#0b111a] p-3 text-xs text-slate-200">
-                        {commandOutput
-                          ? `exit=${commandOutput.exitCode}\n\nSTDOUT:\n${commandOutput.stdout}\n\nSTDERR:\n${commandOutput.stderr}`
-                          : "暂无输出"}
-                      </pre>
-                    </CardContent>
-                  </Card>
                 </div>
 
                 <Card className="border-border/70 bg-card/80">
                   <CardHeader>
-                    <CardTitle>SFTP</CardTitle>
-                    <CardDescription>浏览与传输远端文件。</CardDescription>
+                    <CardTitle>SFTP 文件树</CardTitle>
+                    <CardDescription>展开目录并右键下载文件。</CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div className="flex flex-col gap-2 sm:flex-row">
                       <Input
-                        value={remoteDir}
-                        onChange={(event) => setRemoteDir(event.target.value)}
-                        placeholder="远端目录"
+                        value={sftpRoot}
+                        onChange={(event) => setSftpRoot(event.target.value)}
+                        placeholder="远端根目录，例如 /home 或 ."
                       />
-                      <Button onClick={listDir} disabled={loading}>
-                        列目录
+                      <Button onClick={loadRoot} disabled={loading}>
+                        加载目录
                       </Button>
                     </div>
-
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>名称</TableHead>
-                          <TableHead>类型</TableHead>
-                          <TableHead>大小</TableHead>
-                          <TableHead>路径</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {sftpEntries.length === 0 ? (
-                          <TableRow>
-                            <TableCell colSpan={4} className="text-center">
-                              暂无文件记录
-                            </TableCell>
-                          </TableRow>
-                        ) : (
-                          sftpEntries.map((entry) => (
-                            <TableRow key={`${entry.path}-${entry.name}`}>
-                              <TableCell>{entry.name}</TableCell>
-                              <TableCell>{entry.kind}</TableCell>
-                              <TableCell>{entry.size ?? "-"}</TableCell>
-                              <TableCell>{entry.path}</TableCell>
-                            </TableRow>
-                          ))
-                        )}
-                      </TableBody>
-                    </Table>
-
-                    <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
-                      <Input
-                        placeholder="本地文件路径"
-                        value={uploadLocal}
-                        onChange={(event) => setUploadLocal(event.target.value)}
-                      />
-                      <Input
-                        placeholder="远端目标路径"
-                        value={uploadRemote}
-                        onChange={(event) => setUploadRemote(event.target.value)}
-                      />
-                      <Button onClick={uploadFile} disabled={loading}>
-                        上传
-                      </Button>
+                    <div className="rounded-lg border border-border/70 bg-muted/40 p-3">
+                      <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+                        <span>根目录：{activeRoot}</span>
+                        <span>{loading ? "同步中..." : "就绪"}</span>
+                      </div>
+                      <div className="mb-2 text-[11px] text-muted-foreground">
+                        当前目录：{currentDir}
+                      </div>
+                      <div className="space-y-1">
+                        {sftpTree.length === 0
+                          ? renderEntries([])
+                          : renderEntries(sftpTree)}
+                      </div>
                     </div>
 
-                    <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
-                      <Input
-                        placeholder="远端文件路径"
-                        value={downloadRemote}
-                        onChange={(event) => setDownloadRemote(event.target.value)}
-                      />
-                      <Input
-                        placeholder="本地目标路径"
-                        value={downloadLocal}
-                        onChange={(event) => setDownloadLocal(event.target.value)}
-                      />
-                      <Button onClick={downloadFile} disabled={loading}>
-                        下载
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button onClick={handleUploadClick} disabled={loading}>
+                        <Upload className="h-4 w-4" />
+                        选择文件上传
                       </Button>
+                      <span className="text-xs text-muted-foreground">
+                        上传到：{currentDir}
+                      </span>
                     </div>
                   </CardContent>
                 </Card>
@@ -814,6 +870,24 @@ export default function App() {
                 </CardContent>
               </Card>
             )}
+
+            {contextMenu ? (
+              <div
+                className="fixed z-50 w-40 rounded-md border border-border/70 bg-card/95 p-1 text-xs shadow-[0_10px_30px_rgba(0,0,0,0.45)]"
+                style={{ left: contextMenu.x, top: contextMenu.y }}
+              >
+                <button
+                  type="button"
+                  className="w-full rounded-sm px-2 py-1 text-left hover:bg-muted"
+                  onClick={() => {
+                    void handleDownload(contextMenu.entry);
+                    setContextMenu(null);
+                  }}
+                >
+                  下载到本地
+                </button>
+              </div>
+            ) : null}
 
             {error ? (
               <Alert variant="destructive">
@@ -827,3 +901,17 @@ export default function App() {
     </div>
   );
 }
+  const handleUploadClick = async () => {
+    if (!activeSessionId) return;
+    const selected = await open({
+      multiple: false,
+      title: "选择要上传的文件"
+    });
+    if (!selected || Array.isArray(selected)) return;
+    const localPath = selected;
+    const filename = localPath.split("/").pop() || "upload.bin";
+    const remotePath = activeRoot === "." ? filename : `${currentDir}/${filename}`;
+    setUploadLocal(localPath);
+    setUploadRemote(remotePath);
+    await uploadFile();
+  };

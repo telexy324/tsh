@@ -270,6 +270,7 @@ fn run_command(
     let item = sessions
         .get_mut(&session_id)
         .ok_or(AppError::SessionNotFound)?;
+    item.session.set_blocking(true);
 
     let mut channel = item.session.channel_session()?;
     channel.exec(command.as_str())?;
@@ -302,6 +303,7 @@ fn send_keepalive(state: State<'_, AppState>, session_id: String) -> AppResult<K
     let item = sessions
         .get_mut(&session_id)
         .ok_or(AppError::SessionNotFound)?;
+    item.session.set_blocking(true);
 
     let seconds_to_next = item.session.keepalive_send()?;
     set_last_active(item);
@@ -328,6 +330,7 @@ fn sftp_list_dir(
     let item = sessions
         .get_mut(&session_id)
         .ok_or(AppError::SessionNotFound)?;
+    item.session.set_blocking(true);
 
     let sftp = item.session.sftp()?;
     let entries = sftp.readdir(Path::new(normalized))?;
@@ -388,6 +391,7 @@ fn sftp_upload(
     let item = sessions
         .get_mut(&session_id)
         .ok_or(AppError::SessionNotFound)?;
+    item.session.set_blocking(true);
 
     let mut local_file = File::open(local_path.trim())?;
     let sftp = item.session.sftp()?;
@@ -420,6 +424,7 @@ fn sftp_download(
     let item = sessions
         .get_mut(&session_id)
         .ok_or(AppError::SessionNotFound)?;
+    item.session.set_blocking(true);
 
     let sftp = item.session.sftp()?;
     let mut remote_file = sftp.open(Path::new(remote_path.trim()))?;
@@ -451,7 +456,6 @@ fn start_terminal(
     let dimensions = Some((cols.max(20), rows.max(5), 0, 0));
     channel.request_pty("xterm-256color", None, dimensions)?;
     channel.shell()?;
-    item.session.set_blocking(false);
     set_last_active(item);
 
     let terminal_id = Uuid::new_v4().to_string();
@@ -499,7 +503,27 @@ fn terminal_write(state: State<'_, AppState>, terminal_id: String, data: String)
 
 #[tauri::command]
 fn terminal_read(state: State<'_, AppState>, terminal_id: String) -> AppResult<String> {
-    let session_id;
+    let session_id = {
+        let mut terminals = state
+            .terminals
+            .lock()
+            .map_err(|_| AppError::InvalidInput("state lock poisoned".to_string()))?;
+        let terminal = terminals
+            .get_mut(&terminal_id)
+            .ok_or(AppError::TerminalNotFound)?;
+        terminal.session_id.clone()
+    };
+
+    {
+        let mut sessions = state
+            .sessions
+            .lock()
+            .map_err(|_| AppError::InvalidInput("state lock poisoned".to_string()))?;
+        if let Some(item) = sessions.get_mut(&session_id) {
+            item.session.set_blocking(false);
+        }
+    }
+
     let mut output = Vec::<u8>::new();
     {
         let mut terminals = state
@@ -509,7 +533,6 @@ fn terminal_read(state: State<'_, AppState>, terminal_id: String) -> AppResult<S
         let terminal = terminals
             .get_mut(&terminal_id)
             .ok_or(AppError::TerminalNotFound)?;
-        session_id = terminal.session_id.clone();
 
         let mut buf = [0_u8; 4096];
         loop {
@@ -536,6 +559,7 @@ fn terminal_read(state: State<'_, AppState>, terminal_id: String) -> AppResult<S
         .lock()
         .map_err(|_| AppError::InvalidInput("state lock poisoned".to_string()))?;
     if let Some(item) = sessions.get_mut(&session_id) {
+        item.session.set_blocking(true);
         set_last_active(item);
     }
 
@@ -579,6 +603,7 @@ fn close_terminal(state: State<'_, AppState>, terminal_id: String) -> AppResult<
 fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             create_session,
             list_sessions,
