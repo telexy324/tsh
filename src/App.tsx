@@ -7,13 +7,6 @@ import { ConnectRequest, SessionInfo, SftpEntry } from "./types";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle
-} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
@@ -24,6 +17,20 @@ interface TerminalStartResult {
   terminalId: string;
 }
 
+interface CommandHistoryItem {
+  id: string;
+  command: string;
+  sentAt: number;
+  sessionLabel: string | null;
+}
+
+interface CommandTab {
+  id: string;
+  title: string;
+  input: string;
+  history: CommandHistoryItem[];
+}
+
 const initialForm: ConnectRequest = {
   label: "",
   host: "",
@@ -31,6 +38,13 @@ const initialForm: ConnectRequest = {
   username: "",
   auth: { kind: "password", password: "" }
 };
+
+const createCommandTab = (index: number): CommandTab => ({
+  id: `cmd-${Date.now()}-${index}`,
+  title: `Command ${index + 1}`,
+  input: "",
+  history: []
+});
 
 export default function App() {
   const [connectForm, setConnectForm] = useState<ConnectRequest>(initialForm);
@@ -54,17 +68,35 @@ export default function App() {
   } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [commandTabs, setCommandTabs] = useState<CommandTab[]>([createCommandTab(0)]);
+  const [activeCommandTabId, setActiveCommandTabId] = useState<string>(
+    commandTabs[0].id
+  );
+  const [commandTarget, setCommandTarget] = useState<"current" | "all">("current");
 
   const terminalContainerRef = useRef<HTMLDivElement | null>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const terminalIdRef = useRef<string | null>(null);
+  const terminalBySessionRef = useRef<Map<string, string>>(new Map());
   const terminalGenerationRef = useRef(0);
+  const sessionBufferRef = useRef<Map<string, string>>(new Map());
+  const maxBufferSize = 200_000;
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) ?? null,
     [sessions, activeSessionId]
   );
+
+  const activeCommandTab = useMemo(
+    () => commandTabs.find((tab) => tab.id === activeCommandTabId) ?? null,
+    [commandTabs, activeCommandTabId]
+  );
+
+  const activeSessionLabel = useMemo(() => {
+    if (!activeSession) return null;
+    return activeSession.label?.trim() || `${activeSession.username}@${activeSession.host}`;
+  }, [activeSession]);
 
   const refreshSessions = async () => {
     const list = await invoke<SessionInfo[]>("list_sessions");
@@ -78,16 +110,22 @@ export default function App() {
     }
   };
 
-  const closeTerminalInstance = async () => {
-    const id = terminalIdRef.current;
+  const closeTerminalInstance = async (terminalId?: string | null) => {
+    const id = terminalId ?? terminalIdRef.current;
     if (!id) return;
     try {
       await invoke("close_terminal", { terminalId: id });
     } catch {
       // ignore close errors
     }
+  };
+
+  const closeAllTerminals = async () => {
+    const terminals = Array.from(terminalBySessionRef.current.values());
+    terminalBySessionRef.current.clear();
     terminalIdRef.current = null;
     setTerminalId(null);
+    await Promise.allSettled(terminals.map((id) => closeTerminalInstance(id)));
   };
 
   const startTerminalForActiveSession = async (sessionId: string) => {
@@ -96,9 +134,23 @@ export default function App() {
     if (!term || !fitAddon) return;
     const generation = ++terminalGenerationRef.current;
 
-    await closeTerminalInstance();
-    term.clear();
-    term.writeln(`Connecting interactive shell to session ${sessionId}...`);
+    const existingTerminalId = terminalBySessionRef.current.get(sessionId);
+    if (existingTerminalId) {
+      terminalIdRef.current = existingTerminalId;
+      setTerminalId(existingTerminalId);
+      const buffer = sessionBufferRef.current.get(sessionId);
+      term.reset();
+      if (buffer) {
+        term.write(buffer);
+      }
+      term.focus();
+      return;
+    }
+
+    term.reset();
+    const connectingMessage = `Connecting interactive shell to session ${sessionId}...`;
+    term.writeln(connectingMessage);
+    sessionBufferRef.current.set(sessionId, `${connectingMessage}\r\n`);
 
     const result = await invoke<TerminalStartResult>("start_terminal", {
       sessionId,
@@ -115,6 +167,7 @@ export default function App() {
       return;
     }
 
+    terminalBySessionRef.current.set(sessionId, result.terminalId);
     terminalIdRef.current = result.terminalId;
     setTerminalId(result.terminalId);
     term.focus();
@@ -127,12 +180,13 @@ export default function App() {
     const term = new Terminal({
       cursorBlink: true,
       convertEol: true,
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      fontFamily: "Cascadia Mono, Consolas, Courier New, monospace",
       fontSize: 13,
       theme: {
-        background: "#0b1320",
-        foreground: "#dbeafe",
-        cursor: "#93c5fd"
+        background: "#062b2b",
+        foreground: "#d8f6e5",
+        cursor: "#f4d03f",
+        selectionBackground: "#1c5a5a"
       }
     });
 
@@ -155,7 +209,7 @@ export default function App() {
 
     return () => {
       dataHandler.dispose();
-      void closeTerminalInstance();
+      void closeAllTerminals();
       term.dispose();
       xtermRef.current = null;
       fitAddonRef.current = null;
@@ -174,10 +228,13 @@ export default function App() {
 
   useEffect(() => {
     if (!activeSessionId) {
-      void closeTerminalInstance();
+      if (sessions.length === 0) {
+        void closeAllTerminals();
+        sessionBufferRef.current.clear();
+      }
       const term = xtermRef.current;
       if (term) {
-        term.clear();
+        term.reset();
         term.writeln("No active SSH session. Create or select a tab.");
       }
       return;
@@ -186,7 +243,7 @@ export default function App() {
     void startTerminalForActiveSession(activeSessionId).catch((err) => {
       setError(String(err));
     });
-  }, [activeSessionId]);
+  }, [activeSessionId, sessions]);
 
   useEffect(() => {
     setSftpTree([]);
@@ -207,6 +264,14 @@ export default function App() {
         const output = await invoke<string>("terminal_read", { terminalId });
         if (!output) return;
         xtermRef.current?.write(output);
+        if (activeSessionId) {
+          const prev = sessionBufferRef.current.get(activeSessionId) ?? "";
+          let next = prev + output;
+          if (next.length > maxBufferSize) {
+            next = next.slice(next.length - maxBufferSize);
+          }
+          sessionBufferRef.current.set(activeSessionId, next);
+        }
       } catch {
         // ignore transient read errors
       }
@@ -216,7 +281,7 @@ export default function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [terminalId]);
+  }, [terminalId, activeSessionId, maxBufferSize]);
 
   useEffect(() => {
     const onResize = () => {
@@ -260,6 +325,11 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
+      const terminalIdToClose = terminalBySessionRef.current.get(sessionId);
+      if (terminalIdToClose) {
+        terminalBySessionRef.current.delete(sessionId);
+        await closeTerminalInstance(terminalIdToClose);
+      }
       await invoke("close_session", { sessionId });
       if (sessionId === activeSessionId) {
         terminalIdRef.current = null;
@@ -390,6 +460,21 @@ export default function App() {
     await downloadFile(entry.path, localPath);
   };
 
+  const handleUploadClick = async () => {
+    if (!activeSessionId) return;
+    const selected = await open({
+      multiple: false,
+      title: "选择要上传的文件"
+    });
+    if (!selected || Array.isArray(selected)) return;
+    const localPath = selected;
+    const filename = localPath.split("/").pop() || "upload.bin";
+    const remotePath = activeRoot === "." ? filename : `${currentDir}/${filename}`;
+    setUploadLocal(localPath);
+    setUploadRemote(remotePath);
+    await uploadFile();
+  };
+
   const renderEntries = (entries: SftpEntry[], depth = 0) => {
     if (!entries.length) {
       return (
@@ -451,58 +536,170 @@ export default function App() {
     });
   };
 
+  const addCommandTab = () => {
+    setCommandTabs((prev) => {
+      const next = [...prev, createCommandTab(prev.length)];
+      setActiveCommandTabId(next[next.length - 1].id);
+      return next;
+    });
+  };
+
+  const closeCommandTab = (tabId: string) => {
+    setCommandTabs((prev) => {
+      if (prev.length === 1) return prev;
+      const next = prev.filter((tab) => tab.id !== tabId);
+      if (activeCommandTabId === tabId) {
+        setActiveCommandTabId(next[0].id);
+      }
+      return next;
+    });
+  };
+
+  const updateCommandInput = (tabId: string, value: string) => {
+    setCommandTabs((prev) =>
+      prev.map((tab) => (tab.id === tabId ? { ...tab, input: value } : tab))
+    );
+  };
+
+  const runCommand = async (tab: CommandTab) => {
+    const trimmed = tab.input.trim();
+    if (!trimmed) return;
+    if (commandTarget === "current" && !terminalIdRef.current) {
+      setError("当前没有活动会话，无法执行命令。请先连接会话。");
+      return;
+    }
+
+    const commandPayload = tab.input.endsWith("\n") ? tab.input : `${tab.input}\n`;
+    try {
+      if (commandTarget === "all") {
+        const terminalIds = Array.from(terminalBySessionRef.current.values());
+        if (terminalIds.length === 0) {
+          setError("当前没有活动会话，无法执行命令。请先连接会话。");
+          return;
+        }
+        await Promise.all(
+          terminalIds.map((id) =>
+            invoke("terminal_write", { terminalId: id, data: commandPayload })
+          )
+        );
+      } else if (terminalIdRef.current) {
+        await invoke("terminal_write", {
+          terminalId: terminalIdRef.current,
+          data: commandPayload
+        });
+      }
+    } catch (err) {
+      setError(String(err));
+      return;
+    }
+
+    const historyItem: CommandHistoryItem = {
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command: tab.input,
+      sentAt: Date.now(),
+      sessionLabel:
+        commandTarget === "all"
+          ? "所有会话"
+          : activeSessionLabel
+    };
+
+    setCommandTabs((prev) =>
+      prev.map((item) =>
+        item.id === tab.id
+          ? { ...item, input: "", history: [historyItem, ...item.history] }
+          : item
+      )
+    );
+  };
+
+  const commandStatus =
+    commandTarget === "all"
+      ? "发送到: 所有会话"
+      : activeSessionLabel
+        ? `发送到: ${activeSessionLabel}`
+        : "未连接会话";
+
   return (
-    <div className="min-h-screen text-foreground">
-      <div className="min-h-screen p-6">
-        <header className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-border/60 bg-card/70 px-4 py-3 shadow-[0_12px_30px_rgba(0,0,0,0.3)] backdrop-blur">
-          <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-amber-400 to-orange-600 shadow-[0_0_18px_rgba(245,158,11,0.6)]" />
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-lg font-semibold tracking-tight">
-                  MobaXterm Control
-                </span>
-                <Badge variant="secondary" className="border border-border/60">
-                  SSH Center
-                </Badge>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                多会话管理 · 终端 · SFTP
-              </p>
-            </div>
+    <div className="min-h-screen bg-background text-foreground">
+      <div className="flex h-screen flex-col">
+        <header className="flex items-center gap-4 border-b border-border/70 bg-card/90 px-4 py-2 text-xs">
+          <div className="flex items-center gap-2 text-sm font-semibold tracking-[0.08em] text-primary">
+            SecureCRT · TSH
+            <Badge variant="outline" className="border-border/70 text-[10px]">
+              Terminal Suite
+            </Badge>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button variant="secondary" size="sm">
-              新建会话
-            </Button>
-            <Button variant="secondary" size="sm">
-              导入书签
-            </Button>
-            <Button variant="secondary" size="sm">
-              终端设置
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={loading}
-              onClick={refreshSessions}
-            >
-              刷新
-            </Button>
-          </div>
+          <nav className="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+            {[
+              "File",
+              "Edit",
+              "View",
+              "Options",
+              "Transfer",
+              "Script",
+              "Tools",
+              "Window",
+              "Help"
+            ].map((item) => (
+              <span key={item} className="cursor-default hover:text-foreground">
+                {item}
+              </span>
+            ))}
+          </nav>
         </header>
 
-        <div className="grid min-h-[calc(100vh-160px)] gap-6 md:grid-cols-[320px_1fr]">
-          <aside className="space-y-4">
-            <Card className="border-border/70 bg-card/80 shadow-[0_12px_30px_rgba(0,0,0,0.25)]">
-            <CardHeader>
-              <CardTitle>新建连接</CardTitle>
-              <CardDescription>快速建立一个新的 SSH 会话。</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <form onSubmit={handleConnect} className="space-y-3">
+        <div className="flex items-center gap-2 border-b border-border/70 bg-muted/40 px-4 py-2">
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" size="sm" onClick={refreshSessions}>
+              刷新会话
+            </Button>
+            <Button variant="secondary" size="sm">
+              新建标签
+            </Button>
+            <Button variant="secondary" size="sm">
+              发送组合键
+            </Button>
+            <Button variant="secondary" size="sm" onClick={keepAlive}>
+              Keepalive
+            </Button>
+          </div>
+          <div className="ml-auto text-xs text-muted-foreground">
+            {activeSessionLabel ? `Active: ${activeSessionLabel}` : "No active session"}
+          </div>
+        </div>
+
+        <div className="flex flex-1 overflow-hidden">
+          <aside className="flex w-[320px] border-r border-border/70 bg-card/70">
+            <div className="flex w-10 flex-col items-center gap-2 border-r border-border/70 bg-muted/50 py-3 text-[10px] text-muted-foreground">
+              {["Session", "Command", "Active"].map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  className="rounded-full border border-border/60 bg-card/80 px-2 py-1"
+                  style={{ writingMode: "vertical-rl" }}
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+            <div className="flex-1 space-y-4 overflow-y-auto px-3 py-4">
+              <div className="rounded-lg border border-border/70 bg-card/80 p-3 shadow-[inset_0_0_18px_rgba(0,0,0,0.08)]">
+                <div className="mb-3 flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-semibold">Quick Connect</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      SecureCRT style shortcuts
+                    </div>
+                  </div>
+                  <Badge variant="outline" className="border-border/70 text-[10px]">
+                    SSH
+                  </Badge>
+                </div>
+                <form onSubmit={handleConnect} className="space-y-2 text-xs">
                   <div className="space-y-1">
-                    <Label htmlFor="label">连接名称（可选）</Label>
+                    <Label htmlFor="label" className="text-[11px]">
+                      连接名称
+                    </Label>
                     <Input
                       id="label"
                       placeholder="例如：生产环境"
@@ -516,7 +713,9 @@ export default function App() {
                     />
                   </div>
                   <div className="space-y-1">
-                    <Label htmlFor="host">Host</Label>
+                    <Label htmlFor="host" className="text-[11px]">
+                      Host
+                    </Label>
                     <Input
                       id="host"
                       placeholder="192.168.1.10"
@@ -527,44 +726,50 @@ export default function App() {
                       required
                     />
                   </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="port">Port</Label>
-                    <Input
-                      id="port"
-                      type="number"
-                      min={1}
-                      max={65535}
-                      value={connectForm.port}
-                      onChange={(event) =>
-                        setConnectForm((prev) => ({
-                          ...prev,
-                          port: Number(event.target.value)
-                        }))
-                      }
-                      required
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="username">Username</Label>
-                    <Input
-                      id="username"
-                      placeholder="root"
-                      value={connectForm.username}
-                      onChange={(event) =>
-                        setConnectForm((prev) => ({
-                          ...prev,
-                          username: event.target.value
-                        }))
-                      }
-                      required
-                    />
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label htmlFor="port" className="text-[11px]">
+                        Port
+                      </Label>
+                      <Input
+                        id="port"
+                        type="number"
+                        min={1}
+                        max={65535}
+                        value={connectForm.port}
+                        onChange={(event) =>
+                          setConnectForm((prev) => ({
+                            ...prev,
+                            port: Number(event.target.value)
+                          }))
+                        }
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="username" className="text-[11px]">
+                        Username
+                      </Label>
+                      <Input
+                        id="username"
+                        placeholder="root"
+                        value={connectForm.username}
+                        onChange={(event) =>
+                          setConnectForm((prev) => ({
+                            ...prev,
+                            username: event.target.value
+                          }))
+                        }
+                        required
+                      />
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2">
                     <Button
                       type="button"
                       variant={auth.kind === "password" ? "default" : "secondary"}
-                      className="shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset]"
+                      className="shadow-[inset_0_0_0_1px_rgba(255,255,255,0.05)]"
                       onClick={() =>
                         setConnectForm((prev) => ({
                           ...prev,
@@ -577,7 +782,7 @@ export default function App() {
                     <Button
                       type="button"
                       variant={auth.kind === "privateKey" ? "default" : "secondary"}
-                      className="shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset]"
+                      className="shadow-[inset_0_0_0_1px_rgba(255,255,255,0.05)]"
                       onClick={() =>
                         setConnectForm((prev) => ({
                           ...prev,
@@ -595,7 +800,9 @@ export default function App() {
 
                   {auth.kind === "password" ? (
                     <div className="space-y-1">
-                      <Label htmlFor="password">Password</Label>
+                      <Label htmlFor="password" className="text-[11px]">
+                        Password
+                      </Label>
                       <Input
                         id="password"
                         type="password"
@@ -616,7 +823,9 @@ export default function App() {
                   ) : (
                     <>
                       <div className="space-y-1">
-                        <Label htmlFor="key-path">私钥路径（本机）</Label>
+                        <Label htmlFor="key-path" className="text-[11px]">
+                          私钥路径（本机）
+                        </Label>
                         <Input
                           id="key-path"
                           placeholder="/Users/name/.ssh/id_rsa"
@@ -635,7 +844,9 @@ export default function App() {
                         />
                       </div>
                       <div className="space-y-1">
-                        <Label htmlFor="passphrase">私钥口令（可选）</Label>
+                        <Label htmlFor="passphrase" className="text-[11px]">
+                          私钥口令（可选）
+                        </Label>
                         <Input
                           id="passphrase"
                           type="password"
@@ -659,259 +870,380 @@ export default function App() {
                   <Button type="submit" disabled={loading} className="w-full">
                     {loading ? "处理中..." : "新建连接"}
                   </Button>
-              </form>
-            </CardContent>
-          </Card>
+                </form>
+              </div>
 
-            <Card className="border-border/70 bg-card/80">
-              <CardHeader>
-                <CardTitle>会话树</CardTitle>
-                <CardDescription>按分组浏览和快速切换。</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3 text-sm">
-                <div className="rounded-lg border border-border/70 bg-muted/50 p-2">
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>已连接</span>
-                    <span>{sessions.length}</span>
+              <div className="rounded-lg border border-border/70 bg-card/80 p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-semibold">Session Manager</div>
+                    <div className="text-[11px] text-muted-foreground">已连接</div>
                   </div>
-                  <div className="mt-2 space-y-2">
-                    {sessions.length === 0 ? (
-                      <div className="text-xs text-muted-foreground">
-                        暂无会话
+                  <Badge variant="outline" className="border-border/70 text-[10px]">
+                    {sessions.length}
+                  </Badge>
+                </div>
+                <div className="space-y-2">
+                  {sessions.length === 0 ? (
+                    <div className="text-xs text-muted-foreground">暂无会话</div>
+                  ) : (
+                    sessions.map((session) => {
+                      const label =
+                        session.label?.trim() ||
+                        `${session.username}@${session.host}`;
+                      const isActive = session.id === activeSessionId;
+                      return (
+                        <button
+                          key={session.id}
+                          type="button"
+                          onClick={() => setActiveSessionId(session.id)}
+                          className={cn(
+                            "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs transition",
+                            isActive
+                              ? "bg-primary/15 text-foreground"
+                              : "hover:bg-muted/60"
+                          )}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={cn(
+                                "h-2.5 w-2.5 rounded-full",
+                                isActive
+                                  ? "bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.6)]"
+                                  : "bg-amber-400 shadow-[0_0_10px_rgba(245,158,11,0.6)]"
+                              )}
+                            />
+                            <span className="truncate text-left">{label}</span>
+                          </div>
+                          <span className="text-[10px] text-muted-foreground">SSH</span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border/70 bg-card/80 p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-semibold">SFTP Browser</div>
+                    <div className="text-[11px] text-muted-foreground">文件传输</div>
+                  </div>
+                  <Button variant="secondary" size="sm" onClick={loadRoot}>
+                    刷新
+                  </Button>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Input
+                    value={sftpRoot}
+                    onChange={(event) => setSftpRoot(event.target.value)}
+                    placeholder="远端根目录，例如 /home 或 ."
+                  />
+                  <div className="rounded-md border border-border/60 bg-muted/40 p-2">
+                    <div className="mb-1 flex items-center justify-between text-[10px] text-muted-foreground">
+                      <span>根目录：{activeRoot}</span>
+                      <span>{loading ? "同步中..." : "就绪"}</span>
+                    </div>
+                    <div className="mb-2 text-[10px] text-muted-foreground">
+                      当前目录：{currentDir}
+                    </div>
+                    <div className="space-y-1">
+                      {sftpTree.length === 0 ? renderEntries([]) : renderEntries(sftpTree)}
+                    </div>
+                  </div>
+                  <Button onClick={handleUploadClick} disabled={loading}>
+                    <Upload className="h-4 w-4" />
+                    选择文件上传
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </aside>
+
+          <main className="flex-1 overflow-hidden">
+            <div className="flex h-full flex-col">
+              <div className="flex items-center gap-2 border-b border-border/70 bg-card/70 px-3 py-2">
+                {sessions.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-border/70 bg-card/60 px-4 py-1 text-xs text-muted-foreground">
+                    还没有连接记录。
+                  </div>
+                ) : (
+                  sessions.map((session) => {
+                    const label =
+                      session.label?.trim() ||
+                      `${session.username}@${session.host}`;
+                    const isActive = session.id === activeSessionId;
+                    return (
+                      <div
+                        key={session.id}
+                        className={cn(
+                          "relative flex items-center gap-2 overflow-hidden rounded-md border px-3 py-1 text-xs shadow-[inset_0_0_12px_rgba(0,0,0,0.15)]",
+                          isActive
+                            ? "border-primary/60 bg-primary/15"
+                            : "border-border/70 bg-card/90"
+                        )}
+                        onClick={() => setActiveSessionId(session.id)}
+                      >
+                        <div className="absolute left-0 top-0 h-full w-6 -skew-x-12 bg-muted/40" />
+                        <div className="relative flex items-center gap-2">
+                          <span
+                            className={cn(
+                              "h-2 w-2 rounded-full",
+                              isActive
+                                ? "bg-emerald-500"
+                                : "bg-amber-400"
+                            )}
+                          />
+                          <span className="font-medium">{label}</span>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="ml-2 h-6 w-6 text-muted-foreground hover:text-foreground"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void closeSession(session.id);
+                          }}
+                        >
+                          ×
+                        </Button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              <div className="flex h-full flex-col gap-3 overflow-y-auto p-3">
+                <div className="rounded-lg border border-border/70 bg-card/80 shadow-[0_18px_35px_rgba(0,0,0,0.18)]">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 px-4 py-2 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold">Terminal</span>
+                      <Badge variant="outline" className="border-border/70 text-[10px]">
+                        VT100
+                      </Badge>
+                    </div>
+                    <div className="text-[11px] text-muted-foreground">
+                      {activeSessionLabel
+                        ? `Connected: ${activeSessionLabel}`
+                        : "No active session"}
+                    </div>
+                  </div>
+                  <div
+                    ref={terminalContainerRef}
+                    className="h-[360px] rounded-b-lg border-t border-border/70 bg-[#062b2b] shadow-[inset_0_0_18px_rgba(0,0,0,0.5)]"
+                  />
+                </div>
+
+                <div className="rounded-lg border border-border/70 bg-card/80">
+                  <div className="flex flex-wrap items-center gap-2 border-b border-border/70 px-3 py-2 text-xs">
+                    <span className="font-semibold">Command Window</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      {commandStatus}
+                    </span>
+                    <div className="ml-2 flex items-center gap-2 rounded-md border border-border/60 bg-muted/40 px-2 py-1 text-[11px]">
+                      <span className="text-muted-foreground">发送到</span>
+                      <button
+                        type="button"
+                        className={cn(
+                          "rounded px-2 py-0.5 text-[11px] transition",
+                          commandTarget === "current"
+                            ? "bg-primary/20 text-foreground"
+                            : "text-muted-foreground hover:text-foreground"
+                        )}
+                        onClick={() => setCommandTarget("current")}
+                      >
+                        当前
+                      </button>
+                      <button
+                        type="button"
+                        className={cn(
+                          "rounded px-2 py-0.5 text-[11px] transition",
+                          commandTarget === "all"
+                            ? "bg-primary/20 text-foreground"
+                            : "text-muted-foreground hover:text-foreground"
+                        )}
+                        onClick={() => setCommandTarget("all")}
+                      >
+                        所有
+                      </button>
+                    </div>
+                    <div className="ml-auto flex items-center gap-2">
+                      <Button variant="secondary" size="sm" onClick={addCommandTab}>
+                        新增标签
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2 border-b border-border/70 bg-muted/30 px-3 py-2">
+                    {commandTabs.map((tab) => (
+                      <div
+                        key={tab.id}
+                        className={cn(
+                          "flex items-center gap-2 rounded-md border px-3 py-1 text-xs",
+                          tab.id === activeCommandTabId
+                            ? "border-primary/60 bg-primary/10"
+                            : "border-border/70 bg-card/80"
+                        )}
+                        onClick={() => setActiveCommandTabId(tab.id)}
+                      >
+                        <span>{tab.title}</span>
+                        <button
+                          type="button"
+                          className="text-muted-foreground hover:text-foreground"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            closeCommandTab(tab.id);
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="grid gap-3 p-3 lg:grid-cols-[1.1fr_1fr]">
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center justify-between text-xs text-muted-foreground">
+                        <span>命令历史</span>
+                        <span>{activeCommandTab?.history.length ?? 0} 条</span>
+                      </div>
+                      <div className="max-h-[180px] space-y-2 overflow-y-auto rounded-md border border-border/60 bg-muted/40 p-2">
+                        {activeCommandTab?.history.length ? (
+                          activeCommandTab.history.map((item) => (
+                            <div
+                              key={item.id}
+                              className="rounded-md border border-border/50 bg-card/80 px-2 py-1 text-[11px]"
+                            >
+                              <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                                <span>
+                                  {item.sessionLabel ? `发送到 ${item.sessionLabel}` : "未连接"}
+                                </span>
+                                <span>{new Date(item.sentAt).toLocaleTimeString()}</span>
+                              </div>
+                              <div className="mt-1 whitespace-pre-wrap font-mono text-[11px] text-foreground">
+                                {item.command}
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="text-[11px] text-muted-foreground">暂无历史</div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center justify-between text-xs text-muted-foreground">
+                        <span>发送命令</span>
+                        <span>Ctrl/Cmd + Enter 执行</span>
+                      </div>
+                      <textarea
+                        className="h-[180px] rounded-md border border-border/60 bg-background px-3 py-2 text-xs font-mono text-foreground shadow-[inset_0_0_12px_rgba(0,0,0,0.08)] focus:outline-none focus:ring-2 focus:ring-primary"
+                        value={activeCommandTab?.input ?? ""}
+                        onChange={(event) =>
+                          activeCommandTab
+                            ? updateCommandInput(activeCommandTab.id, event.target.value)
+                            : undefined
+                        }
+                        onKeyDown={(event) => {
+                          if (!activeCommandTab) return;
+                          if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                            event.preventDefault();
+                            void runCommand(activeCommandTab);
+                          }
+                        }}
+                        placeholder="输入命令，例如: show ip int brief"
+                      />
+                      <Button
+                        onClick={() => activeCommandTab && void runCommand(activeCommandTab)}
+                        disabled={!activeCommandTab?.input.trim()}
+                      >
+                        发送到终端
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-3 lg:grid-cols-[1.1fr_1fr]">
+                  <div className="rounded-lg border border-border/70 bg-card/80 p-3">
+                    <div className="mb-2 flex items-center justify-between text-xs">
+                      <span className="font-semibold">Session Info</span>
+                      <Badge variant="outline" className="border-border/70 text-[10px]">
+                        Live
+                      </Badge>
+                    </div>
+                    {activeSession ? (
+                      <div className="space-y-2 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">地址</span>
+                          <span>
+                            {activeSession.username}@{activeSession.host}:{activeSession.port}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Connected</span>
+                          <span>{new Date(activeSession.connectedAt).toLocaleString()}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Last Active</span>
+                          <span>{new Date(activeSession.lastActiveAt).toLocaleString()}</span>
+                        </div>
+                        <Separator className="my-2 bg-border/70" />
+                        <Button onClick={keepAlive} disabled={loading} className="w-full">
+                          发送 Keepalive
+                        </Button>
                       </div>
                     ) : (
-                      sessions.map((session) => {
-                        const label =
-                          session.label?.trim() ||
-                          `${session.username}@${session.host}`;
-                        const isActive = session.id === activeSessionId;
-                        return (
-                          <button
-                            key={session.id}
-                            type="button"
-                            onClick={() => setActiveSessionId(session.id)}
-                            className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 transition ${
-                              isActive
-                                ? "bg-primary/20 text-foreground"
-                                : "hover:bg-muted"
-                            }`}
-                          >
-                            <div className="flex items-center gap-2">
-                              <span
-                                className={`h-2.5 w-2.5 rounded-full ${
-                                  isActive
-                                    ? "bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.8)]"
-                                    : "bg-amber-400 shadow-[0_0_10px_rgba(245,158,11,0.7)]"
-                                }`}
-                              />
-                              <span className="truncate text-left text-xs">
-                                {label}
-                              </span>
-                            </div>
-                            <span className="text-[10px] text-muted-foreground">
-                              SSH
-                            </span>
-                          </button>
-                        );
-                      })
+                      <div className="text-xs text-muted-foreground">先创建一个 SSH 连接。</div>
                     )}
                   </div>
-                </div>
-              </CardContent>
-            </Card>
-        </aside>
 
-        <main className="space-y-4">
-          <div className="flex flex-wrap gap-2">
-            {sessions.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-border/70 bg-card/60 px-4 py-2 text-sm text-muted-foreground">
-                还没有连接记录。
-              </div>
-            ) : (
-              sessions.map((session) => {
-                const label =
-                  session.label?.trim() || `${session.username}@${session.host}`;
-                const isActive = session.id === activeSessionId;
-                return (
-                  <div
-                    key={session.id}
-                    className={`relative flex items-center gap-2 overflow-hidden rounded-md border px-4 py-2 text-sm shadow-[inset_0_0_12px_rgba(0,0,0,0.25)] ${
-                      isActive
-                        ? "border-primary/60 bg-primary/15"
-                        : "border-border/70 bg-card/80"
-                    }`}
-                    onClick={() => setActiveSessionId(session.id)}
-                  >
-                    <div className="absolute left-0 top-0 h-full w-8 -skew-x-12 bg-muted/40" />
-                    <div className="relative flex items-center gap-2">
-                      <span
-                        className={`h-2.5 w-2.5 rounded-full ${
-                          isActive
-                            ? "bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.8)]"
-                            : "bg-amber-400 shadow-[0_0_10px_rgba(245,158,11,0.7)]"
-                        }`}
-                      />
-                      <span className="font-medium">{label}</span>
+                  <div className="rounded-lg border border-border/70 bg-card/80 p-3">
+                    <div className="mb-2 flex items-center justify-between text-xs">
+                      <span className="font-semibold">Transfer Queue</span>
+                      <Badge variant="outline" className="border-border/70 text-[10px]">
+                        Idle
+                      </Badge>
                     </div>
-                    <Button
+                    <div className="space-y-2 text-xs text-muted-foreground">
+                      <div>上传路径：{uploadRemote || "未选择"}</div>
+                      <div>下载路径：{downloadRemote || "未选择"}</div>
+                      <div>本地路径：{downloadLocal || uploadLocal || "未选择"}</div>
+                    </div>
+                  </div>
+                </div>
+
+                {contextMenu ? (
+                  <div
+                    className="fixed z-50 w-40 rounded-md border border-border/70 bg-card/95 p-1 text-xs shadow-[0_10px_30px_rgba(0,0,0,0.25)]"
+                    style={{ left: contextMenu.x, top: contextMenu.y }}
+                  >
+                    <button
                       type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="ml-2 h-7 w-7 text-muted-foreground hover:text-foreground"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void closeSession(session.id);
+                      className="w-full rounded-sm px-2 py-1 text-left hover:bg-muted"
+                      onClick={() => {
+                        void handleDownload(contextMenu.entry);
+                        setContextMenu(null);
                       }}
                     >
-                      ×
-                    </Button>
+                      下载到本地
+                    </button>
                   </div>
-                );
-              })
-            )}
-          </div>
+                ) : null}
 
-          <Card className="border-border/70 bg-card/80 shadow-[0_18px_35px_rgba(0,0,0,0.3)]">
-            <CardHeader>
-              <CardTitle>交互式终端</CardTitle>
-              <CardDescription>直接在当前会话中操作 Shell。</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div
-                ref={terminalContainerRef}
-                className="h-[320px] rounded-lg border border-border/70 bg-[#0b111a] shadow-[inset_0_0_20px_rgba(0,0,0,0.6)]"
-              />
-            </CardContent>
-          </Card>
-
-            {activeSession ? (
-              <>
-                <div className="grid gap-4 lg:grid-cols-[1.2fr_1fr]">
-                  <Card className="border-border/70 bg-card/80">
-                    <CardHeader>
-                      <CardTitle>会话信息</CardTitle>
-                      <CardDescription>当前连接的实时状态。</CardDescription>
-                    </CardHeader>
-                    <CardContent className="space-y-2 text-sm">
-                      <div className="flex items-center justify-between">
-                        <span className="text-muted-foreground">地址</span>
-                        <span>
-                          {activeSession.username}@{activeSession.host}:
-                          {activeSession.port}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-muted-foreground">Connected</span>
-                        <span>
-                          {new Date(activeSession.connectedAt).toLocaleString()}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-muted-foreground">Last Active</span>
-                        <span>
-                          {new Date(activeSession.lastActiveAt).toLocaleString()}
-                        </span>
-                      </div>
-                      <Separator className="my-3 bg-border/70" />
-                      <Button onClick={keepAlive} disabled={loading} className="w-full">
-                        发送 Keepalive
-                      </Button>
-                    </CardContent>
-                  </Card>
-                </div>
-
-                <Card className="border-border/70 bg-card/80">
-                  <CardHeader>
-                    <CardTitle>SFTP 文件树</CardTitle>
-                    <CardDescription>展开目录并右键下载文件。</CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="flex flex-col gap-2 sm:flex-row">
-                      <Input
-                        value={sftpRoot}
-                        onChange={(event) => setSftpRoot(event.target.value)}
-                        placeholder="远端根目录，例如 /home 或 ."
-                      />
-                      <Button onClick={loadRoot} disabled={loading}>
-                        加载目录
-                      </Button>
-                    </div>
-                    <div className="rounded-lg border border-border/70 bg-muted/40 p-3">
-                      <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
-                        <span>根目录：{activeRoot}</span>
-                        <span>{loading ? "同步中..." : "就绪"}</span>
-                      </div>
-                      <div className="mb-2 text-[11px] text-muted-foreground">
-                        当前目录：{currentDir}
-                      </div>
-                      <div className="space-y-1">
-                        {sftpTree.length === 0
-                          ? renderEntries([])
-                          : renderEntries(sftpTree)}
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button onClick={handleUploadClick} disabled={loading}>
-                        <Upload className="h-4 w-4" />
-                        选择文件上传
-                      </Button>
-                      <span className="text-xs text-muted-foreground">
-                        上传到：{currentDir}
-                      </span>
-                    </div>
-                  </CardContent>
-                </Card>
-              </>
-            ) : (
-              <Card className="border-border/70 bg-card/80">
-                <CardContent className="py-10 text-center text-muted-foreground">
-                  先创建一个 SSH 连接。
-                </CardContent>
-              </Card>
-            )}
-
-            {contextMenu ? (
-              <div
-                className="fixed z-50 w-40 rounded-md border border-border/70 bg-card/95 p-1 text-xs shadow-[0_10px_30px_rgba(0,0,0,0.45)]"
-                style={{ left: contextMenu.x, top: contextMenu.y }}
-              >
-                <button
-                  type="button"
-                  className="w-full rounded-sm px-2 py-1 text-left hover:bg-muted"
-                  onClick={() => {
-                    void handleDownload(contextMenu.entry);
-                    setContextMenu(null);
-                  }}
-                >
-                  下载到本地
-                </button>
+                {error ? (
+                  <Alert variant="destructive">
+                    <AlertTitle>发生错误</AlertTitle>
+                    <AlertDescription>{error}</AlertDescription>
+                  </Alert>
+                ) : null}
               </div>
-            ) : null}
-
-            {error ? (
-              <Alert variant="destructive">
-                <AlertTitle>发生错误</AlertTitle>
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            ) : null}
+            </div>
           </main>
         </div>
+
+        <footer className="flex items-center gap-3 border-t border-border/70 bg-card/90 px-4 py-1 text-[11px] text-muted-foreground">
+          <span>Ready</span>
+          <span className="ml-auto">{activeSessionLabel ?? "No session"}</span>
+        </footer>
       </div>
     </div>
   );
 }
-  const handleUploadClick = async () => {
-    if (!activeSessionId) return;
-    const selected = await open({
-      multiple: false,
-      title: "选择要上传的文件"
-    });
-    if (!selected || Array.isArray(selected)) return;
-    const localPath = selected;
-    const filename = localPath.split("/").pop() || "upload.bin";
-    const remotePath = activeRoot === "." ? filename : `${currentDir}/${filename}`;
-    setUploadLocal(localPath);
-    setUploadRemote(remotePath);
-    await uploadFile();
-  };

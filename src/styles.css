@@ -4,26 +4,26 @@
 
 @layer base {
   :root {
-    --background: 222 47% 8%;
-    --foreground: 210 40% 98%;
-    --card: 222 47% 12%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222 47% 12%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 23 90% 55%;
-    --primary-foreground: 222 47% 10%;
-    --secondary: 217 33% 18%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217 33% 16%;
-    --muted-foreground: 215 20% 70%;
-    --accent: 215 35% 20%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217 32% 22%;
-    --input: 217 32% 22%;
-    --ring: 23 90% 55%;
-    --radius: 12px;
+    --background: 210 16% 94%;
+    --foreground: 210 20% 14%;
+    --card: 0 0% 98%;
+    --card-foreground: 210 20% 14%;
+    --popover: 0 0% 98%;
+    --popover-foreground: 210 20% 14%;
+    --primary: 210 60% 35%;
+    --primary-foreground: 210 20% 98%;
+    --secondary: 210 14% 90%;
+    --secondary-foreground: 210 20% 18%;
+    --muted: 210 12% 92%;
+    --muted-foreground: 210 12% 42%;
+    --accent: 210 25% 86%;
+    --accent-foreground: 210 20% 16%;
+    --destructive: 0 72% 52%;
+    --destructive-foreground: 210 20% 98%;
+    --border: 210 12% 78%;
+    --input: 210 12% 78%;
+    --ring: 210 60% 35%;
+    --radius: 10px;
   }
 
   * {
@@ -32,11 +32,11 @@
 
   body {
     @apply bg-background text-foreground;
-    font-family: "IBM Plex Sans", "PingFang SC", sans-serif;
+    font-family: "Segoe UI", "Tahoma", "PingFang SC", sans-serif;
     background-image:
-      radial-gradient(circle at top left, rgba(255, 255, 255, 0.08), transparent 45%),
-      radial-gradient(circle at 20% 20%, rgba(255, 138, 76, 0.15), transparent 45%),
-      linear-gradient(160deg, rgba(14, 24, 39, 0.95), rgba(9, 14, 23, 0.98));
-    background-attachment: fixed;
+      linear-gradient(0deg, rgba(255, 255, 255, 0.75), rgba(255, 255, 255, 0.75)),
+      linear-gradient(90deg, rgba(150, 160, 175, 0.12) 1px, transparent 1px),
+      linear-gradient(0deg, rgba(150, 160, 175, 0.08) 1px, transparent 1px);
+    background-size: auto, 22px 22px, 22px 22px;
   }
 }
