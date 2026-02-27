@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:win-gnu": "scripts/build-win-gnu.sh",
+    "prepare:webview2-fixed": "scripts/prepare-webview2-fixed.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
