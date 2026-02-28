@@ -29,6 +29,8 @@ interface CommandTab {
   title: string;
   input: string;
   history: CommandHistoryItem[];
+  historyIndex: number;
+  draftInput: string;
 }
 
 const initialForm: ConnectRequest = {
@@ -43,7 +45,9 @@ const createCommandTab = (index: number): CommandTab => ({
   id: `cmd-${Date.now()}-${index}`,
   title: `Command ${index + 1}`,
   input: "",
-  history: []
+  history: [],
+  historyIndex: -1,
+  draftInput: ""
 });
 
 export default function App() {
@@ -73,6 +77,11 @@ export default function App() {
     commandTabs[0].id
   );
   const [commandTarget, setCommandTarget] = useState<"current" | "all">("current");
+  const [leftSidebarTab, setLeftSidebarTab] = useState<"quick" | "recent" | "browser">(
+    "quick"
+  );
+  const [recentConnections, setRecentConnections] = useState<ConnectRequest[]>([]);
+  const recentStorageKey = "tsh.recentConnections.v1";
 
   const terminalContainerRef = useRef<HTMLDivElement | null>(null);
   const xtermRef = useRef<Terminal | null>(null);
@@ -227,6 +236,30 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(recentStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        setRecentConnections(parsed as ConnectRequest[]);
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        recentStorageKey,
+        JSON.stringify(recentConnections)
+      );
+    } catch {
+      // ignore storage errors
+    }
+  }, [recentConnections]);
+
+  useEffect(() => {
     if (!activeSessionId) {
       if (sessions.length === 0) {
         void closeAllTerminals();
@@ -312,6 +345,35 @@ export default function App() {
       const created = await invoke<SessionInfo>("create_session", {
         request: connectForm
       });
+      setSessions((prev) => [created, ...prev]);
+      setActiveSessionId(created.id);
+      setRecentConnections((prev) => {
+        const filtered = prev.filter(
+          (item) =>
+            !(
+              item.host === connectForm.host &&
+              item.port === connectForm.port &&
+              item.username === connectForm.username &&
+              item.auth.kind === connectForm.auth.kind &&
+              item.label === connectForm.label &&
+              (item.auth.kind !== "privateKey" ||
+                item.auth.privateKeyPath === connectForm.auth.privateKeyPath)
+            )
+        );
+        return [connectForm, ...filtered].slice(0, 8);
+      });
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const reconnectFromRecent = async (request: ConnectRequest) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const created = await invoke<SessionInfo>("create_session", { request });
       setSessions((prev) => [created, ...prev]);
       setActiveSessionId(created.id);
     } catch (err) {
@@ -557,7 +619,50 @@ export default function App() {
 
   const updateCommandInput = (tabId: string, value: string) => {
     setCommandTabs((prev) =>
-      prev.map((tab) => (tab.id === tabId ? { ...tab, input: value } : tab))
+      prev.map((tab) => {
+        if (tab.id !== tabId) return tab;
+        return {
+          ...tab,
+          input: value,
+          draftInput: tab.historyIndex === -1 ? value : tab.draftInput
+        };
+      })
+    );
+  };
+
+  const navigateCommandHistory = (tab: CommandTab, direction: "up" | "down") => {
+    if (tab.history.length === 0) return;
+    setCommandTabs((prev) =>
+      prev.map((item) => {
+        if (item.id !== tab.id) return item;
+        if (direction === "up") {
+          const nextIndex =
+            item.historyIndex === -1
+              ? 0
+              : Math.min(item.historyIndex + 1, item.history.length - 1);
+          return {
+            ...item,
+            historyIndex: nextIndex,
+            draftInput: item.historyIndex === -1 ? item.input : item.draftInput,
+            input: item.history[nextIndex].command
+          };
+        }
+
+        if (item.historyIndex <= 0) {
+          return {
+            ...item,
+            historyIndex: -1,
+            input: item.draftInput
+          };
+        }
+
+        const nextIndex = item.historyIndex - 1;
+        return {
+          ...item,
+          historyIndex: nextIndex,
+          input: item.history[nextIndex].command
+        };
+      })
     );
   };
 
@@ -606,7 +711,13 @@ export default function App() {
     setCommandTabs((prev) =>
       prev.map((item) =>
         item.id === tab.id
-          ? { ...item, input: "", history: [historyItem, ...item.history] }
+          ? {
+              ...item,
+              input: "",
+              draftInput: "",
+              historyIndex: -1,
+              history: [historyItem, ...item.history]
+            }
           : item
       )
     );
@@ -669,294 +780,303 @@ export default function App() {
         </div>
 
         <div className="flex flex-1 overflow-hidden">
-          <aside className="flex w-[320px] border-r border-border/70 bg-card/70">
+          <aside className="flex w-[280px] border-r border-border/70 bg-card/70">
             <div className="flex w-10 flex-col items-center gap-2 border-r border-border/70 bg-muted/50 py-3 text-[10px] text-muted-foreground">
-              {["Session", "Command", "Active"].map((item) => (
+              {[
+                { id: "quick", label: "Quick Connect" },
+                { id: "recent", label: "Recent Sessions" },
+                { id: "browser", label: "Browser" }
+              ].map((tab) => (
                 <button
-                  key={item}
+                  key={tab.id}
                   type="button"
-                  className="rounded-full border border-border/60 bg-card/80 px-2 py-1"
+                  className={cn(
+                    "rounded-full border px-2 py-1 transition",
+                    leftSidebarTab === tab.id
+                      ? "border-primary/60 bg-primary/15 text-foreground"
+                      : "border-border/60 bg-card/80 text-muted-foreground hover:text-foreground"
+                  )}
                   style={{ writingMode: "vertical-rl" }}
+                  onClick={() => setLeftSidebarTab(tab.id as typeof leftSidebarTab)}
                 >
-                  {item}
+                  {tab.label}
                 </button>
               ))}
             </div>
-            <div className="flex-1 space-y-4 overflow-y-auto px-3 py-4">
-              <div className="rounded-lg border border-border/70 bg-card/80 p-3 shadow-[inset_0_0_18px_rgba(0,0,0,0.08)]">
-                <div className="mb-3 flex items-center justify-between">
-                  <div>
-                    <div className="text-sm font-semibold">Quick Connect</div>
-                    <div className="text-[11px] text-muted-foreground">
-                      SecureCRT style shortcuts
-                    </div>
-                  </div>
-                  <Badge variant="outline" className="border-border/70 text-[10px]">
-                    SSH
-                  </Badge>
-                </div>
-                <form onSubmit={handleConnect} className="space-y-2 text-xs">
-                  <div className="space-y-1">
-                    <Label htmlFor="label" className="text-[11px]">
-                      连接名称
-                    </Label>
-                    <Input
-                      id="label"
-                      placeholder="例如：生产环境"
-                      value={connectForm.label ?? ""}
-                      onChange={(event) =>
-                        setConnectForm((prev) => ({
-                          ...prev,
-                          label: event.target.value
-                        }))
-                      }
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="host" className="text-[11px]">
-                      Host
-                    </Label>
-                    <Input
-                      id="host"
-                      placeholder="192.168.1.10"
-                      value={connectForm.host}
-                      onChange={(event) =>
-                        setConnectForm((prev) => ({ ...prev, host: event.target.value }))
-                      }
-                      required
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="space-y-1">
-                      <Label htmlFor="port" className="text-[11px]">
-                        Port
-                      </Label>
-                      <Input
-                        id="port"
-                        type="number"
-                        min={1}
-                        max={65535}
-                        value={connectForm.port}
-                        onChange={(event) =>
-                          setConnectForm((prev) => ({
-                            ...prev,
-                            port: Number(event.target.value)
-                          }))
-                        }
-                        required
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label htmlFor="username" className="text-[11px]">
-                        Username
-                      </Label>
-                      <Input
-                        id="username"
-                        placeholder="root"
-                        value={connectForm.username}
-                        onChange={(event) =>
-                          setConnectForm((prev) => ({
-                            ...prev,
-                            username: event.target.value
-                          }))
-                        }
-                        required
-                      />
-                    </div>
-                  </div>
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button
-                      type="button"
-                      variant={auth.kind === "password" ? "default" : "secondary"}
-                      className="shadow-[inset_0_0_0_1px_rgba(255,255,255,0.05)]"
-                      onClick={() =>
-                        setConnectForm((prev) => ({
-                          ...prev,
-                          auth: { kind: "password", password: "" }
-                        }))
-                      }
-                    >
-                      Password
-                    </Button>
-                    <Button
-                      type="button"
-                      variant={auth.kind === "privateKey" ? "default" : "secondary"}
-                      className="shadow-[inset_0_0_0_1px_rgba(255,255,255,0.05)]"
-                      onClick={() =>
-                        setConnectForm((prev) => ({
-                          ...prev,
-                          auth: {
-                            kind: "privateKey",
-                            privateKeyPath: "",
-                            passphrase: ""
-                          }
-                        }))
-                      }
-                    >
-                      Private Key
-                    </Button>
+            <div className="flex-1 space-y-4 overflow-y-auto px-2 py-3">
+              {leftSidebarTab === "quick" ? (
+                <div className="rounded-lg border border-border/70 bg-card/80 p-3 shadow-[inset_0_0_18px_rgba(0,0,0,0.08)]">
+                  <div className="mb-3 flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-semibold">Quick Connect</div>
+                      <div className="text-[11px] text-muted-foreground">
+                        SecureCRT style shortcuts
+                      </div>
+                    </div>
+                    <Badge variant="outline" className="border-border/70 text-[10px]">
+                      SSH
+                    </Badge>
                   </div>
-
-                  {auth.kind === "password" ? (
+                  <form onSubmit={handleConnect} className="space-y-2 text-xs">
                     <div className="space-y-1">
-                      <Label htmlFor="password" className="text-[11px]">
-                        Password
+                      <Label htmlFor="label" className="text-[11px]">
+                        连接名称
                       </Label>
                       <Input
-                        id="password"
-                        type="password"
-                        placeholder="请输入密码"
-                        value={auth.password}
+                        id="label"
+                        placeholder="例如：生产环境"
+                        value={connectForm.label ?? ""}
                         onChange={(event) =>
                           setConnectForm((prev) => ({
                             ...prev,
-                            auth: {
-                              kind: "password",
-                              password: event.target.value
-                            }
+                            label: event.target.value
                           }))
+                        }
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="host" className="text-[11px]">
+                        Host
+                      </Label>
+                      <Input
+                        id="host"
+                        placeholder="192.168.1.10"
+                        value={connectForm.host}
+                        onChange={(event) =>
+                          setConnectForm((prev) => ({ ...prev, host: event.target.value }))
                         }
                         required
                       />
                     </div>
-                  ) : (
-                    <>
+                    <div className="grid grid-cols-2 gap-2">
                       <div className="space-y-1">
-                        <Label htmlFor="key-path" className="text-[11px]">
-                          私钥路径（本机）
+                        <Label htmlFor="port" className="text-[11px]">
+                          Port
                         </Label>
                         <Input
-                          id="key-path"
-                          placeholder="/Users/name/.ssh/id_rsa"
-                          value={auth.privateKeyPath}
+                          id="port"
+                          type="number"
+                          min={1}
+                          max={65535}
+                          value={connectForm.port}
                           onChange={(event) =>
                             setConnectForm((prev) => ({
                               ...prev,
-                              auth: {
-                                kind: "privateKey",
-                                privateKeyPath: event.target.value,
-                                passphrase: auth.passphrase
-                              }
+                              port: Number(event.target.value)
                             }))
                           }
                           required
                         />
                       </div>
                       <div className="space-y-1">
-                        <Label htmlFor="passphrase" className="text-[11px]">
-                          私钥口令（可选）
+                        <Label htmlFor="username" className="text-[11px]">
+                          Username
                         </Label>
                         <Input
-                          id="passphrase"
+                          id="username"
+                          placeholder="root"
+                          value={connectForm.username}
+                          onChange={(event) =>
+                            setConnectForm((prev) => ({
+                              ...prev,
+                              username: event.target.value
+                            }))
+                          }
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <Button
+                        type="button"
+                        variant={auth.kind === "password" ? "default" : "secondary"}
+                        className="shadow-[inset_0_0_0_1px_rgba(255,255,255,0.05)]"
+                        onClick={() =>
+                          setConnectForm((prev) => ({
+                            ...prev,
+                            auth: { kind: "password", password: "" }
+                          }))
+                        }
+                      >
+                        Password
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={auth.kind === "privateKey" ? "default" : "secondary"}
+                        className="shadow-[inset_0_0_0_1px_rgba(255,255,255,0.05)]"
+                        onClick={() =>
+                          setConnectForm((prev) => ({
+                            ...prev,
+                            auth: {
+                              kind: "privateKey",
+                              privateKeyPath: "",
+                              passphrase: ""
+                            }
+                          }))
+                        }
+                      >
+                        Private Key
+                      </Button>
+                    </div>
+
+                    {auth.kind === "password" ? (
+                      <div className="space-y-1">
+                        <Label htmlFor="password" className="text-[11px]">
+                          Password
+                        </Label>
+                        <Input
+                          id="password"
                           type="password"
-                          placeholder="可留空"
-                          value={auth.passphrase ?? ""}
+                          placeholder="请输入密码"
+                          value={auth.password}
                           onChange={(event) =>
                             setConnectForm((prev) => ({
                               ...prev,
                               auth: {
-                                kind: "privateKey",
-                                privateKeyPath: auth.privateKeyPath,
-                                passphrase: event.target.value
+                                kind: "password",
+                                password: event.target.value
                               }
                             }))
                           }
+                          required
                         />
                       </div>
-                    </>
-                  )}
+                    ) : (
+                      <>
+                        <div className="space-y-1">
+                          <Label htmlFor="key-path" className="text-[11px]">
+                            私钥路径（本机）
+                          </Label>
+                          <Input
+                            id="key-path"
+                            placeholder="/Users/name/.ssh/id_rsa"
+                            value={auth.privateKeyPath}
+                            onChange={(event) =>
+                              setConnectForm((prev) => ({
+                                ...prev,
+                                auth: {
+                                  kind: "privateKey",
+                                  privateKeyPath: event.target.value,
+                                  passphrase: auth.passphrase
+                                }
+                              }))
+                            }
+                            required
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label htmlFor="passphrase" className="text-[11px]">
+                            私钥口令（可选）
+                          </Label>
+                          <Input
+                            id="passphrase"
+                            type="password"
+                            placeholder="可留空"
+                            value={auth.passphrase ?? ""}
+                            onChange={(event) =>
+                              setConnectForm((prev) => ({
+                                ...prev,
+                                auth: {
+                                  kind: "privateKey",
+                                  privateKeyPath: auth.privateKeyPath,
+                                  passphrase: event.target.value
+                                }
+                              }))
+                            }
+                          />
+                        </div>
+                      </>
+                    )}
 
-                  <Button type="submit" disabled={loading} className="w-full">
-                    {loading ? "处理中..." : "新建连接"}
-                  </Button>
-                </form>
-              </div>
+                    <Button type="submit" disabled={loading} className="w-full">
+                      {loading ? "处理中..." : "新建连接"}
+                    </Button>
+                  </form>
+                </div>
+              ) : null}
 
-              <div className="rounded-lg border border-border/70 bg-card/80 p-3">
-                <div className="mb-2 flex items-center justify-between">
-                  <div>
-                    <div className="text-sm font-semibold">Session Manager</div>
-                    <div className="text-[11px] text-muted-foreground">已连接</div>
+              {leftSidebarTab === "recent" ? (
+                <div className="rounded-lg border border-border/70 bg-card/80 p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-semibold">Recent Sessions</div>
+                      <div className="text-[11px] text-muted-foreground">
+                        最近连接的服务器
+                      </div>
+                    </div>
+                    <Badge variant="outline" className="border-border/70 text-[10px]">
+                      {recentConnections.length}
+                    </Badge>
                   </div>
-                  <Badge variant="outline" className="border-border/70 text-[10px]">
-                    {sessions.length}
-                  </Badge>
+                  <div className="space-y-2">
+                    {recentConnections.length === 0 ? (
+                      <div className="text-xs text-muted-foreground">暂无历史</div>
+                    ) : (
+                      recentConnections.map((item, index) => {
+                        const label =
+                          item.label?.trim() || `${item.username}@${item.host}`;
+                        return (
+                          <button
+                            key={`${label}-${index}`}
+                            type="button"
+                            onClick={() => void reconnectFromRecent(item)}
+                            className="flex w-full items-center justify-between rounded-md border border-border/60 bg-card/90 px-2 py-2 text-xs transition hover:bg-muted/40"
+                          >
+                            <div className="flex flex-col text-left">
+                              <span className="font-medium text-foreground">{label}</span>
+                              <span className="text-[10px] text-muted-foreground">
+                                {item.host}:{item.port} · {item.auth.kind}
+                              </span>
+                            </div>
+                            <span className="text-[10px] text-muted-foreground">
+                              连接
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  {sessions.length === 0 ? (
-                    <div className="text-xs text-muted-foreground">暂无会话</div>
-                  ) : (
-                    sessions.map((session) => {
-                      const label =
-                        session.label?.trim() ||
-                        `${session.username}@${session.host}`;
-                      const isActive = session.id === activeSessionId;
-                      return (
-                        <button
-                          key={session.id}
-                          type="button"
-                          onClick={() => setActiveSessionId(session.id)}
-                          className={cn(
-                            "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs transition",
-                            isActive
-                              ? "bg-primary/15 text-foreground"
-                              : "hover:bg-muted/60"
-                          )}
-                        >
-                          <div className="flex items-center gap-2">
-                            <span
-                              className={cn(
-                                "h-2.5 w-2.5 rounded-full",
-                                isActive
-                                  ? "bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.6)]"
-                                  : "bg-amber-400 shadow-[0_0_10px_rgba(245,158,11,0.6)]"
-                              )}
-                            />
-                            <span className="truncate text-left">{label}</span>
-                          </div>
-                          <span className="text-[10px] text-muted-foreground">SSH</span>
-                        </button>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
+              ) : null}
 
-              <div className="rounded-lg border border-border/70 bg-card/80 p-3">
-                <div className="mb-2 flex items-center justify-between">
-                  <div>
-                    <div className="text-sm font-semibold">SFTP Browser</div>
-                    <div className="text-[11px] text-muted-foreground">文件传输</div>
+              {leftSidebarTab === "browser" ? (
+                <div className="rounded-lg border border-border/70 bg-card/80 p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-semibold">SFTP Browser</div>
+                      <div className="text-[11px] text-muted-foreground">文件传输</div>
+                    </div>
+                    <Button variant="secondary" size="sm" onClick={loadRoot}>
+                      刷新
+                    </Button>
                   </div>
-                  <Button variant="secondary" size="sm" onClick={loadRoot}>
-                    刷新
-                  </Button>
-                </div>
-                <div className="flex flex-col gap-2">
-                  <Input
-                    value={sftpRoot}
-                    onChange={(event) => setSftpRoot(event.target.value)}
-                    placeholder="远端根目录，例如 /home 或 ."
-                  />
-                  <div className="rounded-md border border-border/60 bg-muted/40 p-2">
-                    <div className="mb-1 flex items-center justify-between text-[10px] text-muted-foreground">
-                      <span>根目录：{activeRoot}</span>
-                      <span>{loading ? "同步中..." : "就绪"}</span>
+                  <div className="flex flex-col gap-2">
+                    <Input
+                      value={sftpRoot}
+                      onChange={(event) => setSftpRoot(event.target.value)}
+                      placeholder="远端根目录，例如 /home 或 ."
+                    />
+                    <div className="rounded-md border border-border/60 bg-muted/40 p-2">
+                      <div className="mb-1 flex items-center justify-between text-[10px] text-muted-foreground">
+                        <span>根目录：{activeRoot}</span>
+                        <span>{loading ? "同步中..." : "就绪"}</span>
+                      </div>
+                      <div className="mb-2 text-[10px] text-muted-foreground">
+                        当前目录：{currentDir}
+                      </div>
+                      <div className="space-y-1">
+                        {sftpTree.length === 0 ? renderEntries([]) : renderEntries(sftpTree)}
+                      </div>
                     </div>
-                    <div className="mb-2 text-[10px] text-muted-foreground">
-                      当前目录：{currentDir}
-                    </div>
-                    <div className="space-y-1">
-                      {sftpTree.length === 0 ? renderEntries([]) : renderEntries(sftpTree)}
-                    </div>
+                    <Button onClick={handleUploadClick} disabled={loading}>
+                      <Upload className="h-4 w-4" />
+                      选择文件上传
+                    </Button>
                   </div>
-                  <Button onClick={handleUploadClick} disabled={loading}>
-                    <Upload className="h-4 w-4" />
-                    选择文件上传
-                  </Button>
                 </div>
-              </div>
+              ) : null}
             </div>
           </aside>
 
@@ -1031,7 +1151,7 @@ export default function App() {
                   </div>
                   <div
                     ref={terminalContainerRef}
-                    className="h-[360px] rounded-b-lg border-t border-border/70 bg-[#062b2b] shadow-[inset_0_0_18px_rgba(0,0,0,0.5)]"
+                    className="h-[520px] rounded-b-lg border-t border-border/70 bg-[#062b2b] shadow-[inset_0_0_18px_rgba(0,0,0,0.5)]"
                   />
                 </div>
 
@@ -1100,42 +1220,14 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                  <div className="grid gap-3 p-3 lg:grid-cols-[1.1fr_1fr]">
-                    <div className="flex flex-col gap-2">
-                      <div className="flex items-center justify-between text-xs text-muted-foreground">
-                        <span>命令历史</span>
-                        <span>{activeCommandTab?.history.length ?? 0} 条</span>
-                      </div>
-                      <div className="max-h-[180px] space-y-2 overflow-y-auto rounded-md border border-border/60 bg-muted/40 p-2">
-                        {activeCommandTab?.history.length ? (
-                          activeCommandTab.history.map((item) => (
-                            <div
-                              key={item.id}
-                              className="rounded-md border border-border/50 bg-card/80 px-2 py-1 text-[11px]"
-                            >
-                              <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-                                <span>
-                                  {item.sessionLabel ? `发送到 ${item.sessionLabel}` : "未连接"}
-                                </span>
-                                <span>{new Date(item.sentAt).toLocaleTimeString()}</span>
-                              </div>
-                              <div className="mt-1 whitespace-pre-wrap font-mono text-[11px] text-foreground">
-                                {item.command}
-                              </div>
-                            </div>
-                          ))
-                        ) : (
-                          <div className="text-[11px] text-muted-foreground">暂无历史</div>
-                        )}
-                      </div>
-                    </div>
+                  <div className="grid gap-3 p-3">
                     <div className="flex flex-col gap-2">
                       <div className="flex items-center justify-between text-xs text-muted-foreground">
                         <span>发送命令</span>
-                        <span>Ctrl/Cmd + Enter 执行</span>
+                        <span>↑/↓ 回溯历史 · Ctrl/Cmd + Enter 执行</span>
                       </div>
                       <textarea
-                        className="h-[180px] rounded-md border border-border/60 bg-background px-3 py-2 text-xs font-mono text-foreground shadow-[inset_0_0_12px_rgba(0,0,0,0.08)] focus:outline-none focus:ring-2 focus:ring-primary"
+                        className="h-[160px] rounded-md border border-border/60 bg-background px-3 py-2 text-xs font-mono text-foreground shadow-[inset_0_0_12px_rgba(0,0,0,0.08)] focus:outline-none focus:ring-2 focus:ring-primary"
                         value={activeCommandTab?.input ?? ""}
                         onChange={(event) =>
                           activeCommandTab
@@ -1147,6 +1239,15 @@ export default function App() {
                           if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
                             event.preventDefault();
                             void runCommand(activeCommandTab);
+                            return;
+                          }
+                          if (event.key === "ArrowUp") {
+                            event.preventDefault();
+                            navigateCommandHistory(activeCommandTab, "up");
+                          }
+                          if (event.key === "ArrowDown") {
+                            event.preventDefault();
+                            navigateCommandHistory(activeCommandTab, "down");
                           }
                         }}
                         placeholder="输入命令，例如: show ip int brief"
@@ -1161,52 +1262,17 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="grid gap-3 lg:grid-cols-[1.1fr_1fr]">
-                  <div className="rounded-lg border border-border/70 bg-card/80 p-3">
-                    <div className="mb-2 flex items-center justify-between text-xs">
-                      <span className="font-semibold">Session Info</span>
-                      <Badge variant="outline" className="border-border/70 text-[10px]">
-                        Live
-                      </Badge>
-                    </div>
-                    {activeSession ? (
-                      <div className="space-y-2 text-xs">
-                        <div className="flex items-center justify-between">
-                          <span className="text-muted-foreground">地址</span>
-                          <span>
-                            {activeSession.username}@{activeSession.host}:{activeSession.port}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className="text-muted-foreground">Connected</span>
-                          <span>{new Date(activeSession.connectedAt).toLocaleString()}</span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className="text-muted-foreground">Last Active</span>
-                          <span>{new Date(activeSession.lastActiveAt).toLocaleString()}</span>
-                        </div>
-                        <Separator className="my-2 bg-border/70" />
-                        <Button onClick={keepAlive} disabled={loading} className="w-full">
-                          发送 Keepalive
-                        </Button>
-                      </div>
-                    ) : (
-                      <div className="text-xs text-muted-foreground">先创建一个 SSH 连接。</div>
-                    )}
+                <div className="rounded-lg border border-border/70 bg-card/80 p-3">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-semibold">Session Status</span>
+                    <Button onClick={keepAlive} disabled={loading} size="sm">
+                      Keepalive
+                    </Button>
                   </div>
-
-                  <div className="rounded-lg border border-border/70 bg-card/80 p-3">
-                    <div className="mb-2 flex items-center justify-between text-xs">
-                      <span className="font-semibold">Transfer Queue</span>
-                      <Badge variant="outline" className="border-border/70 text-[10px]">
-                        Idle
-                      </Badge>
-                    </div>
-                    <div className="space-y-2 text-xs text-muted-foreground">
-                      <div>上传路径：{uploadRemote || "未选择"}</div>
-                      <div>下载路径：{downloadRemote || "未选择"}</div>
-                      <div>本地路径：{downloadLocal || uploadLocal || "未选择"}</div>
-                    </div>
+                  <div className="mt-2 text-[11px] text-muted-foreground">
+                    {activeSession
+                      ? `Connected: ${activeSession.username}@${activeSession.host}:${activeSession.port}`
+                      : "先创建一个 SSH 连接。"}
                   </div>
                 </div>
 
