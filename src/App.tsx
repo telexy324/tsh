@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { FitAddon } from "xterm-addon-fit";
 import { Terminal } from "xterm";
 import { ConnectRequest, SessionInfo, SftpEntry } from "./types";
@@ -228,10 +228,8 @@ export default function App() {
   useEffect(() => {
     const closeContext = () => setContextMenu(null);
     window.addEventListener("click", closeContext);
-    window.addEventListener("contextmenu", closeContext);
     return () => {
       window.removeEventListener("click", closeContext);
-      window.removeEventListener("contextmenu", closeContext);
     };
   }, []);
 
@@ -444,21 +442,22 @@ export default function App() {
     setLoading(false);
   };
 
-  const uploadFile = async () => {
+  const uploadFile = async (localPath: string, remotePath: string) => {
     if (!activeSessionId) return;
     setLoading(true);
     setError(null);
     try {
       await invoke("sftp_upload", {
         sessionId: activeSessionId,
-        localPath: uploadLocal,
-        remotePath: uploadRemote
+        localPath,
+        remotePath
       });
       if (sftpRoot.trim()) {
         await loadRoot();
       }
     } catch (err) {
       setError(String(err));
+    } finally {
       setLoading(false);
     }
   };
@@ -510,31 +509,45 @@ export default function App() {
 
   const openContextMenu = (event: React.MouseEvent, entry: SftpEntry) => {
     event.preventDefault();
+    event.stopPropagation();
     setContextMenu({ x: event.clientX, y: event.clientY, entry });
   };
 
   const handleDownload = async (entry: SftpEntry) => {
-    const suggested = downloadLocal || "";
-    const localPath = window.prompt("保存到本地路径", suggested);
-    if (!localPath) return;
-    setDownloadLocal(localPath);
-    setDownloadRemote(entry.path);
-    await downloadFile(entry.path, localPath);
+    setError(null);
+    try {
+      const localPath = await save({
+        title: "下载到本地",
+        defaultPath: downloadLocal || entry.name
+      });
+      if (!localPath || Array.isArray(localPath)) return;
+      setDownloadLocal(localPath.toString());
+      setDownloadRemote(entry.path);
+      await downloadFile(entry.path, localPath.toString());
+    } catch (err) {
+      setError(`打开保存对话框失败: ${String(err)}`);
+    }
   };
 
   const handleUploadClick = async () => {
     if (!activeSessionId) return;
-    const selected = await open({
-      multiple: false,
-      title: "选择要上传的文件"
-    });
-    if (!selected || Array.isArray(selected)) return;
-    const localPath = selected;
-    const filename = localPath.split("/").pop() || "upload.bin";
-    const remotePath = activeRoot === "." ? filename : `${currentDir}/${filename}`;
-    setUploadLocal(localPath);
-    setUploadRemote(remotePath);
-    await uploadFile();
+    setError(null);
+    try {
+      const selected = await open({
+        multiple: false,
+        title: "选择要上传的文件"
+      });
+      if (!selected || Array.isArray(selected)) return;
+      const localPath = selected.toString();
+      const normalizedLocalPath = localPath.replace(/\\/g, "/");
+      const filename = normalizedLocalPath.split("/").pop() || "upload.bin";
+      const remotePath = activeRoot === "." ? filename : `${currentDir}/${filename}`;
+      setUploadLocal(localPath);
+      setUploadRemote(remotePath);
+      await uploadFile(localPath, remotePath);
+    } catch (err) {
+      setError(`打开文件选择器失败: ${String(err)}`);
+    }
   };
 
   const renderEntries = (entries: SftpEntry[], depth = 0) => {
@@ -1224,7 +1237,7 @@ export default function App() {
                     <div className="flex flex-col gap-2">
                       <div className="flex items-center justify-between text-xs text-muted-foreground">
                         <span>发送命令</span>
-                        <span>↑/↓ 回溯历史 · Ctrl/Cmd + Enter 执行</span>
+                        <span>Enter 执行 · Option/Ctrl + Enter 换行 · ↑/↓ 回溯历史</span>
                       </div>
                       <textarea
                         className="h-[160px] rounded-md border border-border/60 bg-background px-3 py-2 text-xs font-mono text-foreground shadow-[inset_0_0_12px_rgba(0,0,0,0.08)] focus:outline-none focus:ring-2 focus:ring-primary"
@@ -1236,7 +1249,17 @@ export default function App() {
                         }
                         onKeyDown={(event) => {
                           if (!activeCommandTab) return;
-                          if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                          if (event.nativeEvent.isComposing) return;
+                          if (event.key === "Enter" && (event.altKey || event.ctrlKey)) {
+                            return;
+                          }
+                          if (
+                            event.key === "Enter" &&
+                            !event.metaKey &&
+                            !event.shiftKey &&
+                            !event.altKey &&
+                            !event.ctrlKey
+                          ) {
                             event.preventDefault();
                             void runCommand(activeCommandTab);
                             return;
@@ -1252,12 +1275,6 @@ export default function App() {
                         }}
                         placeholder="输入命令，例如: show ip int brief"
                       />
-                      <Button
-                        onClick={() => activeCommandTab && void runCommand(activeCommandTab)}
-                        disabled={!activeCommandTab?.input.trim()}
-                      >
-                        发送到终端
-                      </Button>
                     </div>
                   </div>
                 </div>
