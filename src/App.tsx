@@ -50,6 +50,15 @@ const createCommandTab = (index: number): CommandTab => ({
   draftInput: ""
 });
 
+const isSameAuthIdentity = (left: ConnectRequest["auth"], right: ConnectRequest["auth"]) => {
+  switch (left.kind) {
+    case "password":
+      return right.kind === "password";
+    case "privateKey":
+      return right.kind === "privateKey" && left.privateKeyPath === right.privateKeyPath;
+  }
+};
+
 export default function App() {
   const [connectForm, setConnectForm] = useState<ConnectRequest>(initialForm);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -352,10 +361,8 @@ export default function App() {
               item.host === connectForm.host &&
               item.port === connectForm.port &&
               item.username === connectForm.username &&
-              item.auth.kind === connectForm.auth.kind &&
               item.label === connectForm.label &&
-              (item.auth.kind !== "privateKey" ||
-                item.auth.privateKeyPath === connectForm.auth.privateKeyPath)
+              isSameAuthIdentity(item.auth, connectForm.auth)
             )
         );
         return [connectForm, ...filtered].slice(0, 8);
@@ -748,7 +755,7 @@ export default function App() {
       <div className="flex h-screen flex-col">
         <header className="flex items-center gap-4 border-b border-border/70 bg-card/90 px-4 py-2 text-xs">
           <div className="flex items-center gap-2 text-sm font-semibold tracking-[0.08em] text-primary">
-            SecureCRT · TSH
+            TSH
             <Badge variant="outline" className="border-border/70 text-[10px]">
               Terminal Suite
             </Badge>

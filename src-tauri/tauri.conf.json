@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Tauri SSH Client",
+  "productName": "TSH Client",
   "version": "0.1.0",
   "identifier": "com.example.taurisshclient",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Tauri SSH Client",
+        "title": "TSH Client",
         "width": 1280,
         "height": 820,
         "minWidth": 980,
