@@ -33,6 +33,14 @@ interface CommandTab {
   draftInput: string;
 }
 
+interface SavedSessionProfile {
+  id: string;
+  name: string;
+  request: ConnectRequest;
+  createdAt: number;
+  updatedAt: number;
+}
+
 const initialForm: ConnectRequest = {
   label: "",
   host: "",
@@ -50,6 +58,10 @@ const createCommandTab = (index: number): CommandTab => ({
   draftInput: ""
 });
 
+const recentStorageKey = "tsh.recentConnections.v1";
+const savedSessionsStorageKey = "tsh.savedSessions.v1";
+const keepaliveStorageKey = "tsh.keepaliveSettings.v1";
+
 const isSameAuthIdentity = (left: ConnectRequest["auth"], right: ConnectRequest["auth"]) => {
   switch (left.kind) {
     case "password":
@@ -58,6 +70,37 @@ const isSameAuthIdentity = (left: ConnectRequest["auth"], right: ConnectRequest[
       return right.kind === "privateKey" && left.privateKeyPath === right.privateKeyPath;
   }
 };
+
+const cloneConnectRequest = (request: ConnectRequest): ConnectRequest => ({
+  label: request.label ?? "",
+  host: request.host,
+  port: request.port,
+  username: request.username,
+  auth:
+    request.auth.kind === "password"
+      ? { kind: "password", password: request.auth.password }
+      : {
+          kind: "privateKey",
+          privateKeyPath: request.auth.privateKeyPath,
+          passphrase: request.auth.passphrase
+        }
+});
+
+const isSameConnectionIdentity = (left: ConnectRequest, right: ConnectRequest) =>
+  left.host === right.host &&
+  left.port === right.port &&
+  left.username === right.username &&
+  (left.label ?? "") === (right.label ?? "") &&
+  isSameAuthIdentity(left.auth, right.auth);
+
+const appendRecentConnection = (list: ConnectRequest[], request: ConnectRequest) => {
+  const normalized = cloneConnectRequest(request);
+  const filtered = list.filter((item) => !isSameConnectionIdentity(item, normalized));
+  return [normalized, ...filtered].slice(0, 8);
+};
+
+const requestDisplayName = (request: ConnectRequest) =>
+  request.label?.trim() || `${request.username}@${request.host}:${request.port}`;
 
 export default function App() {
   const [connectForm, setConnectForm] = useState<ConnectRequest>(initialForm);
@@ -90,7 +133,13 @@ export default function App() {
     "quick"
   );
   const [recentConnections, setRecentConnections] = useState<ConnectRequest[]>([]);
-  const recentStorageKey = "tsh.recentConnections.v1";
+  const [savedSessions, setSavedSessions] = useState<SavedSessionProfile[]>([]);
+  const [topMenu, setTopMenu] = useState<"file" | "options" | null>(null);
+  const [fileDialogOpen, setFileDialogOpen] = useState(false);
+  const [optionsDialogOpen, setOptionsDialogOpen] = useState(false);
+  const [keepaliveEnabled, setKeepaliveEnabled] = useState(false);
+  const [keepaliveIntervalSec, setKeepaliveIntervalSec] = useState(30);
+  const [lastKeepaliveAt, setLastKeepaliveAt] = useState<number | null>(null);
 
   const terminalContainerRef = useRef<HTMLDivElement | null>(null);
   const xtermRef = useRef<Terminal | null>(null);
@@ -235,7 +284,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const closeContext = () => setContextMenu(null);
+    const closeContext = () => {
+      setContextMenu(null);
+      setTopMenu(null);
+    };
     window.addEventListener("click", closeContext);
     return () => {
       window.removeEventListener("click", closeContext);
@@ -257,6 +309,38 @@ export default function App() {
 
   useEffect(() => {
     try {
+      const raw = window.localStorage.getItem(savedSessionsStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        setSavedSessions(parsed as SavedSessionProfile[]);
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(keepaliveStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as {
+        enabled?: boolean;
+        intervalSec?: number;
+      };
+      if (typeof parsed.enabled === "boolean") {
+        setKeepaliveEnabled(parsed.enabled);
+      }
+      if (typeof parsed.intervalSec === "number" && Number.isFinite(parsed.intervalSec)) {
+        setKeepaliveIntervalSec(Math.min(3600, Math.max(5, Math.floor(parsed.intervalSec))));
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
       window.localStorage.setItem(
         recentStorageKey,
         JSON.stringify(recentConnections)
@@ -265,6 +349,28 @@ export default function App() {
       // ignore storage errors
     }
   }, [recentConnections]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(savedSessionsStorageKey, JSON.stringify(savedSessions));
+    } catch {
+      // ignore storage errors
+    }
+  }, [savedSessions]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        keepaliveStorageKey,
+        JSON.stringify({
+          enabled: keepaliveEnabled,
+          intervalSec: keepaliveIntervalSec
+        })
+      );
+    } catch {
+      // ignore storage errors
+    }
+  }, [keepaliveEnabled, keepaliveIntervalSec]);
 
   useEffect(() => {
     if (!activeSessionId) {
@@ -324,6 +430,32 @@ export default function App() {
   }, [terminalId, activeSessionId, maxBufferSize]);
 
   useEffect(() => {
+    if (!keepaliveEnabled || sessions.length === 0) return;
+    const intervalMs = Math.max(5, keepaliveIntervalSec) * 1000;
+    let cancelled = false;
+
+    const sendKeepaliveToAll = async () => {
+      if (cancelled || sessions.length === 0) return;
+      await Promise.allSettled(
+        sessions.map((session) => invoke("send_keepalive", { sessionId: session.id }))
+      );
+      if (!cancelled) {
+        setLastKeepaliveAt(Date.now());
+      }
+    };
+
+    void sendKeepaliveToAll();
+    const timer = window.setInterval(() => {
+      void sendKeepaliveToAll();
+    }, intervalMs);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [keepaliveEnabled, keepaliveIntervalSec, sessions]);
+
+  useEffect(() => {
     const onResize = () => {
       const term = xtermRef.current;
       const fitAddon = fitAddonRef.current;
@@ -349,24 +481,45 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
+      const request = cloneConnectRequest(connectForm);
       const created = await invoke<SessionInfo>("create_session", {
-        request: connectForm
+        request
       });
       setSessions((prev) => [created, ...prev]);
       setActiveSessionId(created.id);
-      setRecentConnections((prev) => {
-        const filtered = prev.filter(
-          (item) =>
-            !(
-              item.host === connectForm.host &&
-              item.port === connectForm.port &&
-              item.username === connectForm.username &&
-              item.label === connectForm.label &&
-              isSameAuthIdentity(item.auth, connectForm.auth)
-            )
+      setRecentConnections((prev) => appendRecentConnection(prev, request));
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openSessionRequests = async (requests: ConnectRequest[]) => {
+    if (requests.length === 0) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const results = await Promise.allSettled(
+        requests.map((request) =>
+          invoke<SessionInfo>("create_session", { request: cloneConnectRequest(request) })
+        )
+      );
+      const created = results.flatMap((result) =>
+        result.status === "fulfilled" ? [result.value] : []
+      );
+      const failedCount = results.length - created.length;
+
+      if (created.length > 0) {
+        setSessions((prev) => [...created, ...prev]);
+        setActiveSessionId(created[0].id);
+        setRecentConnections((prev) =>
+          requests.reduce((next, request) => appendRecentConnection(next, request), prev)
         );
-        return [connectForm, ...filtered].slice(0, 8);
-      });
+      }
+      if (failedCount > 0) {
+        setError(`有 ${failedCount} 个会话打开失败，请检查连接配置。`);
+      }
     } catch (err) {
       setError(String(err));
     } finally {
@@ -375,17 +528,7 @@ export default function App() {
   };
 
   const reconnectFromRecent = async (request: ConnectRequest) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const created = await invoke<SessionInfo>("create_session", { request });
-      setSessions((prev) => [created, ...prev]);
-      setActiveSessionId(created.id);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setLoading(false);
-    }
+    await openSessionRequests([request]);
   };
 
   const closeSession = async (sessionId: string) => {
@@ -402,6 +545,23 @@ export default function App() {
         terminalIdRef.current = null;
         setTerminalId(null);
       }
+      await refreshSessions();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const closeAllSessions = async () => {
+    if (sessions.length === 0) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const ids = sessions.map((session) => session.id);
+      await Promise.allSettled(ids.map((sessionId) => invoke("close_session", { sessionId })));
+      await closeAllTerminals();
+      sessionBufferRef.current.clear();
       await refreshSessions();
     } catch (err) {
       setError(String(err));
@@ -493,12 +653,67 @@ export default function App() {
     setError(null);
     try {
       await invoke("send_keepalive", { sessionId: activeSessionId });
+      setLastKeepaliveAt(Date.now());
       await refreshSessions();
     } catch (err) {
       setError(String(err));
     } finally {
       setLoading(false);
     }
+  };
+
+  const saveCurrentSessionProfile = () => {
+    if (!connectForm.host.trim() || !connectForm.username.trim()) {
+      setError("请先填写 Host 和 Username，再保存会话。");
+      return;
+    }
+    setError(null);
+    const now = Date.now();
+    const request = cloneConnectRequest(connectForm);
+    const existing = savedSessions.find((item) => isSameConnectionIdentity(item.request, request));
+    const name = connectForm.label?.trim() || `${connectForm.username}@${connectForm.host}`;
+
+    if (existing) {
+      setSavedSessions((prev) =>
+        prev.map((item) =>
+          item.id === existing.id ? { ...item, name, request, updatedAt: now } : item
+        )
+      );
+      return;
+    }
+
+    const id =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `${now}-${Math.random().toString(16).slice(2)}`;
+    const profile: SavedSessionProfile = {
+      id,
+      name,
+      request,
+      createdAt: now,
+      updatedAt: now
+    };
+    setSavedSessions((prev) => [profile, ...prev]);
+  };
+
+  const loadSavedSessionToForm = (profile: SavedSessionProfile) => {
+    setConnectForm(cloneConnectRequest(profile.request));
+    setLeftSidebarTab("quick");
+    setTopMenu(null);
+  };
+
+  const openSavedSession = async (profile: SavedSessionProfile) => {
+    await openSessionRequests([profile.request]);
+    setTopMenu(null);
+  };
+
+  const openAllSavedSessions = async () => {
+    await openSessionRequests(savedSessions.map((item) => item.request));
+    setTopMenu(null);
+  };
+
+  const deleteSavedSession = (profileId: string) => {
+    setSavedSessions((prev) => prev.filter((item) => item.id !== profileId));
   };
 
   const auth = connectForm.auth;
@@ -749,6 +964,9 @@ export default function App() {
       : activeSessionLabel
         ? `发送到: ${activeSessionLabel}`
         : "未连接会话";
+  const keepaliveLastLabel = lastKeepaliveAt
+    ? new Date(lastKeepaliveAt).toLocaleTimeString()
+    : "尚未发送";
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -760,18 +978,62 @@ export default function App() {
               Terminal Suite
             </Badge>
           </div>
-          <nav className="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
-            {[
-              "File",
-              "Edit",
-              "View",
-              "Options",
-              "Transfer",
-              "Script",
-              "Tools",
-              "Window",
-              "Help"
-            ].map((item) => (
+          <nav className="flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
+            <div className="relative" onClick={(event) => event.stopPropagation()}>
+              <button
+                type="button"
+                className={cn(
+                  "rounded px-1 py-0.5 hover:text-foreground",
+                  topMenu === "file" && "bg-muted text-foreground"
+                )}
+                onClick={() => setTopMenu((prev) => (prev === "file" ? null : "file"))}
+              >
+                File
+              </button>
+              {topMenu === "file" ? (
+                <div className="absolute left-0 top-6 z-50 min-w-[180px] rounded-md border border-border/70 bg-card p-1 shadow-[0_10px_28px_rgba(0,0,0,0.3)]">
+                  <button
+                    type="button"
+                    className="w-full rounded-sm px-2 py-1 text-left text-xs text-foreground hover:bg-muted"
+                    onClick={() => {
+                      setFileDialogOpen(true);
+                      setTopMenu(null);
+                    }}
+                  >
+                    Session Manager...
+                  </button>
+                </div>
+              ) : null}
+            </div>
+            <span className="cursor-default hover:text-foreground">Edit</span>
+            <span className="cursor-default hover:text-foreground">View</span>
+            <div className="relative" onClick={(event) => event.stopPropagation()}>
+              <button
+                type="button"
+                className={cn(
+                  "rounded px-1 py-0.5 hover:text-foreground",
+                  topMenu === "options" && "bg-muted text-foreground"
+                )}
+                onClick={() => setTopMenu((prev) => (prev === "options" ? null : "options"))}
+              >
+                Options
+              </button>
+              {topMenu === "options" ? (
+                <div className="absolute left-0 top-6 z-50 min-w-[180px] rounded-md border border-border/70 bg-card p-1 shadow-[0_10px_28px_rgba(0,0,0,0.3)]">
+                  <button
+                    type="button"
+                    className="w-full rounded-sm px-2 py-1 text-left text-xs text-foreground hover:bg-muted"
+                    onClick={() => {
+                      setOptionsDialogOpen(true);
+                      setTopMenu(null);
+                    }}
+                  >
+                    Keepalive Settings...
+                  </button>
+                </div>
+              ) : null}
+            </div>
+            {["Transfer", "Script", "Tools", "Window", "Help"].map((item) => (
               <span key={item} className="cursor-default hover:text-foreground">
                 {item}
               </span>
@@ -1334,6 +1596,164 @@ export default function App() {
           <span className="ml-auto">{activeSessionLabel ?? "No session"}</span>
         </footer>
       </div>
+
+      {fileDialogOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center bg-black/45 p-6"
+          onClick={() => setFileDialogOpen(false)}
+        >
+          <div
+            className="w-full max-w-4xl rounded-lg border border-border/70 bg-card p-4 shadow-[0_18px_48px_rgba(0,0,0,0.35)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <div>
+                <div className="text-sm font-semibold">Session Manager</div>
+                <div className="text-[11px] text-muted-foreground">管理保存和已打开的会话</div>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setFileDialogOpen(false)}>
+                关闭
+              </Button>
+            </div>
+            <div className="grid gap-3 lg:grid-cols-[280px_1fr] text-xs">
+              <div className="space-y-2">
+                <div className="text-[11px] font-semibold text-foreground">File Actions</div>
+                <Button variant="secondary" size="sm" className="w-full" onClick={saveCurrentSessionProfile}>
+                  保存当前连接配置
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="w-full"
+                  onClick={() => void openAllSavedSessions()}
+                  disabled={savedSessions.length === 0 || loading}
+                >
+                  打开全部已保存会话
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="w-full"
+                  onClick={() => void closeAllSessions()}
+                  disabled={sessions.length === 0 || loading}
+                >
+                  关闭全部已打开会话
+                </Button>
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="text-[11px] font-semibold text-foreground">Saved Sessions</div>
+                  <Badge variant="outline" className="border-border/70 text-[10px]">
+                    {savedSessions.length}
+                  </Badge>
+                </div>
+                <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                  {savedSessions.length === 0 ? (
+                    <div className="rounded-md border border-dashed border-border/60 px-3 py-2 text-muted-foreground">
+                      暂无保存的会话，请在 Quick Connect 填写后点击“保存当前连接配置”。
+                    </div>
+                  ) : (
+                    savedSessions.map((profile) => (
+                      <div
+                        key={profile.id}
+                        className="flex flex-wrap items-center gap-2 rounded-md border border-border/60 bg-card/80 px-2 py-2"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-medium text-foreground">{profile.name}</div>
+                          <div className="truncate text-[10px] text-muted-foreground">
+                            {requestDisplayName(profile.request)}
+                          </div>
+                        </div>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => loadSavedSessionToForm(profile)}
+                        >
+                          加载
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={loading}
+                          onClick={() => void openSavedSession(profile)}
+                        >
+                          打开
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => deleteSavedSession(profile.id)}>
+                          删除
+                        </Button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {optionsDialogOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center bg-black/45 p-6"
+          onClick={() => setOptionsDialogOpen(false)}
+        >
+          <div
+            className="w-full max-w-2xl rounded-lg border border-border/70 bg-card p-4 shadow-[0_18px_48px_rgba(0,0,0,0.35)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <div>
+                <div className="text-sm font-semibold">Keepalive Settings</div>
+                <div className="text-[11px] text-muted-foreground">设置自动 keepalive 频率</div>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setOptionsDialogOpen(false)}>
+                关闭
+              </Button>
+            </div>
+            <div className="grid gap-3 lg:grid-cols-[320px_1fr] text-xs">
+              <div className="space-y-2">
+                <div className="text-[11px] font-semibold text-foreground">Keepalive</div>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={keepaliveEnabled}
+                    onChange={(event) => setKeepaliveEnabled(event.target.checked)}
+                  />
+                  <span>启用自动 Keepalive（所有已连接会话）</span>
+                </label>
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="keepalive-interval" className="text-[11px]">
+                    发送频率（秒）
+                  </Label>
+                  <Input
+                    id="keepalive-interval"
+                    type="number"
+                    min={5}
+                    max={3600}
+                    className="h-8 w-24"
+                    value={keepaliveIntervalSec}
+                    onChange={(event) =>
+                      setKeepaliveIntervalSec(
+                        Math.min(3600, Math.max(5, Math.floor(Number(event.target.value) || 5)))
+                      )
+                    }
+                  />
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  上次发送: {keepaliveLastLabel}
+                </div>
+                <Button variant="secondary" size="sm" onClick={keepAlive} disabled={loading || !activeSessionId}>
+                  立即发送到当前会话
+                </Button>
+              </div>
+              <div className="rounded-md border border-border/60 bg-muted/30 p-2 text-[11px] text-muted-foreground">
+                启用后，客户端会按照设定频率自动向所有已连接 SSH 会话发送 keepalive。
+                该设置会本地持久化，重启应用后仍保留。
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
